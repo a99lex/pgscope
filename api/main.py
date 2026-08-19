@@ -996,11 +996,11 @@ def cluster_overview():
 @app.get("/api/clusters")
 def clusters():
     sql = """
-    SELECT DISTINCT
+    SELECT
         cluster_id,
         cluster_name
-    FROM query_snapshots
-    WHERE cluster_id IS NOT NULL
+    FROM monitored_clusters
+    WHERE enabled = true
     ORDER BY cluster_name, cluster_id
     """
 
@@ -1015,10 +1015,10 @@ def databases(
     cluster_id: str | None = None,
 ):
     sql = """
-    SELECT DISTINCT
+    SELECT
         database_name
-    FROM query_snapshots
-    WHERE cluster_id IS NOT NULL
+    FROM monitored_databases
+    WHERE enabled = true
       AND (
           %s::text IS NULL
           OR cluster_id = %s::text
