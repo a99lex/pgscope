@@ -46,13 +46,13 @@ spec:
             - name: PGSCOPE_STORE_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.collector.storageSecret.name }}
+                  name: {{ default .Values.collector.storageSecret.name .Values.collector.storageSecret.existingSecret }}
                   key: {{ .Values.collector.storageSecret.usernameKey }}
 
             - name: PGSCOPE_STORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.collector.storageSecret.name }}
+                  name: {{ default .Values.collector.storageSecret.name .Values.collector.storageSecret.existingSecret }}
                   key: {{ .Values.collector.storageSecret.passwordKey }}
 
           volumeMounts:

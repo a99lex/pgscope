@@ -31,14 +31,32 @@ spec:
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.api.databaseSecret.name }}
-                  key: {{ .Values.api.databaseSecret.usernameKey }}
+                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  key: {{ .Values.migration.databaseSecret.usernameKey }}
 
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.api.databaseSecret.name }}
-                  key: {{ .Values.api.databaseSecret.passwordKey }}
+                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  key: {{ .Values.migration.databaseSecret.passwordKey }}
+
+            - name: PGSCOPE_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default .Values.collector.storageSecret.name .Values.collector.storageSecret.existingSecret }}
+                  key: {{ .Values.collector.storageSecret.usernameKey }}
+
+            - name: PGSCOPE_MIGRATOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  key: {{ .Values.migration.databaseSecret.usernameKey }}
+
+            - name: PGSCOPE_API_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default .Values.api.databaseSecret.name .Values.api.databaseSecret.existingSecret }}
+                  key: {{ .Values.api.databaseSecret.usernameKey }}
 
           command:
             - /bin/sh
@@ -55,6 +73,18 @@ spec:
               psql \
                 -v ON_ERROR_STOP=1 \
                 -f /migrations/002_auth_first_login.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -v writer_user="$PGSCOPE_WRITER_USER" \
+                -v migrator_user="$PGSCOPE_MIGRATOR_USER" \
+                -f /migrations/003_storage_grants.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -v api_user="$PGSCOPE_API_USER" \
+                -v migrator_user="$PGSCOPE_MIGRATOR_USER" \
+                -f /migrations/004_api_grants.sql
 
               echo "PgScope migrations complete."
 

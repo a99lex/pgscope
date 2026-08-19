@@ -32,10 +32,10 @@ spec:
             - name: PGSCOPE_DB_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.api.databaseSecret.name }}
+                  name: {{ default .Values.api.databaseSecret.name .Values.api.databaseSecret.existingSecret }}
                   key: {{ .Values.api.databaseSecret.usernameKey }}
             - name: PGSCOPE_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.api.databaseSecret.name }}
+                  name: {{ default .Values.api.databaseSecret.name .Values.api.databaseSecret.existingSecret }}
                   key: {{ .Values.api.databaseSecret.passwordKey }}

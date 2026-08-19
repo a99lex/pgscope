@@ -9,3 +9,9 @@ data:
 
   002_auth_first_login.sql: |
 {{ .Files.Get "migrations/002_auth_first_login.sql" | indent 4 }}
+
+  003_storage_grants.sql: |
+{{ .Files.Get "migrations/003_storage_grants.sql" | indent 4 }}
+
+  004_api_grants.sql: |
+{{ .Files.Get "migrations/004_api_grants.sql" | indent 4 }}
