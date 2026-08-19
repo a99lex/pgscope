@@ -1,0 +1,49 @@
+name: PgScope CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Python syntax
+        run: |
+          python -m py_compile api/main.py
+          python -m py_compile collector/collector.py
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint Helm chart
+        run: |
+          helm lint helm/pgscope
+
+      - name: Render Helm chart
+        run: |
+          helm template pgscope helm/pgscope > /tmp/pgscope-rendered.yaml
+
+      - name: Validate rendered manifests
+        run: |
+          test -s /tmp/pgscope-rendered.yaml
+          grep -q "kind: Deployment" /tmp/pgscope-rendered.yaml
+          grep -q "kind: Job" /tmp/pgscope-rendered.yaml
+          grep -q "pgscope-api" /tmp/pgscope-rendered.yaml
+          grep -q "pgscope-collector" /tmp/pgscope-rendered.yaml
+
+      - name: Check migrations
+        run: |
+          test -f migrations/001_schema.sql
+          test -f migrations/002_auth_first_login.sql
+          test -f migrations/003_storage_grants.sql
+          test -f migrations/004_api_grants.sql
