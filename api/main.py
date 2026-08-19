@@ -1363,8 +1363,25 @@ def test_cluster(r: ClusterTestRequest):
 @app.post("/api/configured-clusters")
 def save_cluster(r: ClusterCreateRequest):
     dbs = sorted({x.strip() for x in r.databases if x.strip()})
+
     if not dbs:
-        raise HTTPException(status_code=400, detail="At least one database is required.")
+        raise HTTPException(
+            status_code=400,
+            detail="At least one database is required.",
+        )
+
+    if not r.secret_name or not r.secret_name.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Secret name is required.",
+        )
+
+    if not r.secret_key or not r.secret_key.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Secret key is required.",
+        )
+
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
@@ -3048,10 +3065,12 @@ async function saveAddCluster() {
         || !v.cluster_name
         || !v.host
         || !v.username
+        || !v.secret_name
+        || !v.secret_key
         || !v.databases.length
     ) {
         st.innerText =
-            'Fill in cluster ID, name, host, username and database.';
+            'Fill in cluster ID, name, host, username, secret name, secret key and database.';
         return;
     }
 
