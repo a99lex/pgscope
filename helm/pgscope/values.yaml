@@ -1,0 +1,50 @@
+api:
+  image:
+    repository: pgscope-api
+    tag: "1.4.3"
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  databaseSecret:
+    name: pgscope-api-db
+    usernameKey: username
+    passwordKey: password
+
+collector:
+  image:
+    repository: pgscope-collector
+    tag: "1.1.1"
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  storageSecret:
+    name: pgscope-db
+    usernameKey: store-user
+    passwordKey: store-password
+
+  intervalSeconds: 30
+  queryLimit: 200
+
+retention:
+  snapshotsDays: 7
+  deltasDays: 30
+  findingsDays: 90
+  cleanupIntervalMinutes: 60
+
+storage:
+  host: pg-lab-rw
+  port: 5432
+  database: pgscope
+
+monitoredDatabaseSecrets:
+  - pgscope-db
+
+auth:
+  sessionHours: 12
+  cookieSecure: false

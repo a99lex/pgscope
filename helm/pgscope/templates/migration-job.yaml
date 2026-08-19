@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pgscope-migrations
+
+spec:
+  backoffLimit: 3
+
+  template:
+    metadata:
+      labels:
+        app: pgscope-migrations
+
+    spec:
+      restartPolicy: Never
+
+      containers:
+        - name: migrations
+          image: postgres:18
+
+          env:
+            - name: PGHOST
+              value: {{ .Values.storage.host | quote }}
+
+            - name: PGPORT
+              value: {{ .Values.storage.port | quote }}
+
+            - name: PGDATABASE
+              value: {{ .Values.storage.database | quote }}
+
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.databaseSecret.name }}
+                  key: {{ .Values.api.databaseSecret.usernameKey }}
+
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.databaseSecret.name }}
+                  key: {{ .Values.api.databaseSecret.passwordKey }}
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              echo "Running PgScope migrations..."
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/001_schema.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/002_auth_first_login.sql
+
+              echo "PgScope migrations complete."
+
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+
+      volumes:
+        - name: migrations
+          configMap:
+            name: pgscope-migrations

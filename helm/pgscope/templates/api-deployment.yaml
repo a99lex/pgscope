@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgscope-api
+  labels:
+    app: pgscope-api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app: pgscope-api
+  template:
+    metadata:
+      labels:
+        app: pgscope-api
+    spec:
+      serviceAccountName: pgscope-api
+      containers:
+        - name: api
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          env:
+            - name: PGSCOPE_DB_HOST
+              value: {{ .Values.storage.host | quote }}
+            - name: PGSCOPE_DB_PORT
+              value: {{ .Values.storage.port | quote }}
+            - name: PGSCOPE_DB_NAME
+              value: {{ .Values.storage.database | quote }}
+            - name: PGSCOPE_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.databaseSecret.name }}
+                  key: {{ .Values.api.databaseSecret.usernameKey }}
+            - name: PGSCOPE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.databaseSecret.name }}
+                  key: {{ .Values.api.databaseSecret.passwordKey }}

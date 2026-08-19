@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgscope-migrations
+
+data:
+  001_schema.sql: |
+{{ .Files.Get "migrations/001_schema.sql" | indent 4 }}
+
+  002_auth_first_login.sql: |
+{{ .Files.Get "migrations/002_auth_first_login.sql" | indent 4 }}
