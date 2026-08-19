@@ -1,0 +1,99 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pgscope-migrations
+
+spec:
+  backoffLimit: 3
+
+  template:
+    metadata:
+      labels:
+        app: pgscope-migrations
+
+    spec:
+      restartPolicy: Never
+
+      containers:
+        - name: migrations
+          image: postgres:18
+
+          env:
+            - name: PGHOST
+              value: {{ .Values.storage.host | quote }}
+
+            - name: PGPORT
+              value: {{ .Values.storage.port | quote }}
+
+            - name: PGDATABASE
+              value: {{ .Values.storage.database | quote }}
+
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  key: {{ .Values.migration.databaseSecret.usernameKey }}
+
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  key: {{ .Values.migration.databaseSecret.passwordKey }}
+
+            - name: PGSCOPE_WRITER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default .Values.collector.storageSecret.name .Values.collector.storageSecret.existingSecret }}
+                  key: {{ .Values.collector.storageSecret.usernameKey }}
+
+            - name: PGSCOPE_MIGRATOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  key: {{ .Values.migration.databaseSecret.usernameKey }}
+
+            - name: PGSCOPE_API_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default .Values.api.databaseSecret.name .Values.api.databaseSecret.existingSecret }}
+                  key: {{ .Values.api.databaseSecret.usernameKey }}
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              echo "Running PgScope migrations..."
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/001_schema.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/002_auth_first_login.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -v writer_user="$PGSCOPE_WRITER_USER" \
+                -v migrator_user="$PGSCOPE_MIGRATOR_USER" \
+                -f /migrations/003_storage_grants.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -v api_user="$PGSCOPE_API_USER" \
+                -v migrator_user="$PGSCOPE_MIGRATOR_USER" \
+                -f /migrations/004_api_grants.sql
+
+              echo "PgScope migrations complete."
+
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+
+      volumes:
+        - name: migrations
+          configMap:
+            name: pgscope-migrations

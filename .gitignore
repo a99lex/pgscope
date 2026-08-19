@@ -34,3 +34,11 @@ secret*.yaml
 # Old version copies - Git handles versions now
 main_v*.py
 postgresqltuner.pl
+
+# Local Python virtualenv
+.venv/
+
+# Old/generated release copies
+main_v*.py
+collector_v*.py
+pgscope-v*.zip

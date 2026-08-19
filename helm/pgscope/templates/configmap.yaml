@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgscope-config
+
+data:
+  pgscope.yaml: |
+    collector:
+      interval_seconds: {{ .Values.collector.intervalSeconds }}
+      query_limit: {{ .Values.collector.queryLimit }}
+
+    retention:
+      snapshots_days: {{ .Values.retention.snapshotsDays }}
+      deltas_days: {{ .Values.retention.deltasDays }}
+      findings_days: {{ .Values.retention.findingsDays }}
+      cleanup_interval_minutes: {{ .Values.retention.cleanupIntervalMinutes }}
