@@ -17,7 +17,7 @@ from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 
 
-VERSION = "1.4.0"
+VERSION = "1.5.1"
 
 DB_HOST = os.getenv("PGSCOPE_DB_HOST", "pg-lab-rw")
 DB_PORT = int(os.getenv("PGSCOPE_DB_PORT", "5432"))
