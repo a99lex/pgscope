@@ -1,0 +1,33 @@
+collector:
+  interval_seconds: 30
+  query_limit: 200
+
+retention:
+  snapshots_days: 7
+  deltas_days: 30
+  findings_days: 90
+  cleanup_interval_minutes: 60
+
+clusters:
+
+  - id: cnpg-lab
+    name: CNPG Lab
+    host: pg-lab-rw
+    port: 5432
+    username: pgscope_monitor
+    password_env: PGSCOPE_CNPG_LAB_PASSWORD
+
+    databases:
+      - postgres
+      - bench
+
+  - id: cnpg-lab2
+    name: CNPG Lab 2
+    host: pg-lab2-rw
+    port: 5432
+    username: pgscope_monitor
+    password_env: PGSCOPE_CNPG_LAB2_PASSWORD
+
+    databases:
+      - postgres
+      - appdb2

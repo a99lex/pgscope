@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Credentials / secrets
+.env
+.env.*
+*.secret
+*.secrets
+credentials*
+secrets/
+
+# Kubernetes secrets
+*-secret.yaml
+secret*.yaml
+
+# IDE
+.vscode/
+.idea/
+
+# Logs / temp
+*.log
+*.tmp
+*.swp
+
+# Generated archives
+*.zip
+
+# Old version copies - Git handles versions now
+main_v*.py
+postgresqltuner.pl

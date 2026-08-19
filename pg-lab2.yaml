@@ -1,0 +1,24 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: pg-lab2
+
+spec:
+  instances: 3
+
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
+
+  storage:
+    size: 2Gi
+
+  bootstrap:
+    initdb:
+      database: appdb2
+      owner: appuser2
+      secret:
+        name: pg-lab2-app
+
+  postgresql:
+    parameters:
+      pg_stat_statements.max: "10000"
+      pg_stat_statements.track: "all"

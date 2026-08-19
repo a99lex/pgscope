@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pgscope-api
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pgscope-api-secret-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - pgscope-db
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pgscope-api-secret-reader
+subjects:
+  - kind: ServiceAccount
+    name: pgscope-api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pgscope-api-secret-reader

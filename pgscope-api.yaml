@@ -1,0 +1,741 @@
+import os
+import time
+import logging
+from datetime import datetime, timezone
+
+import psycopg
+from psycopg.rows import dict_row
+
+
+# =========================================================
+# Configuration
+# =========================================================
+
+SOURCE_HOST = os.getenv("PGSCOPE_SOURCE_HOST", "localhost")
+SOURCE_PORT = int(os.getenv("PGSCOPE_SOURCE_PORT", "5432"))
+SOURCE_DB = os.getenv("PGSCOPE_SOURCE_DB", "postgres")
+SOURCE_USER = os.getenv("PGSCOPE_SOURCE_USER", "pgscope_monitor")
+SOURCE_PASSWORD = os.getenv("PGSCOPE_SOURCE_PASSWORD", "")
+
+STORE_HOST = os.getenv("PGSCOPE_STORE_HOST", "localhost")
+STORE_PORT = int(os.getenv("PGSCOPE_STORE_PORT", "5432"))
+STORE_DB = os.getenv("PGSCOPE_STORE_DB", "pgscope")
+STORE_USER = os.getenv("PGSCOPE_STORE_USER", "pgscope_writer")
+STORE_PASSWORD = os.getenv("PGSCOPE_STORE_PASSWORD", "")
+
+INTERVAL = int(os.getenv("PGSCOPE_INTERVAL", "30"))
+QUERY_LIMIT = int(os.getenv("PGSCOPE_QUERY_LIMIT", "200"))
+
+
+# =========================================================
+# Advisor thresholds
+# =========================================================
+
+SLOW_QUERY_MS = 500
+DOMINANT_QUERY_PCT = 40
+DOMINANT_QUERY_MIN_MS = 1000
+
+HIGH_READ_BLOCKS = 10000
+LOW_CACHE_PCT = 90
+
+HIGH_TEMP_BLOCKS = 1000
+HIGH_WAL_MB = 50
+
+
+# =========================================================
+# Logging
+# =========================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+log = logging.getLogger("pgscope")
+
+
+# =========================================================
+# Source query
+# =========================================================
+
+QUERY_SQL = """
+SELECT
+    s.dbid,
+    s.userid,
+    d.datname AS database_name,
+    s.queryid,
+    s.toplevel,
+    s.calls,
+    s.total_exec_time,
+    s.mean_exec_time,
+    s.rows,
+    s.shared_blks_hit,
+    s.shared_blks_read,
+    s.temp_blks_written,
+    s.wal_bytes,
+    s.query AS query_text
+
+FROM pg_stat_statements s
+
+JOIN pg_database d
+  ON d.oid = s.dbid
+
+LEFT JOIN pg_roles r
+  ON r.oid = s.userid
+
+WHERE s.queryid IS NOT NULL
+
+AND d.datname <> %s
+
+AND COALESCE(r.rolname, '') NOT IN (%s, %s)
+
+AND upper(trim(s.query)) NOT IN (
+    'BEGIN',
+    'END',
+    'COMMIT',
+    'ROLLBACK'
+)
+
+ORDER BY s.total_exec_time DESC
+
+LIMIT %s;
+"""
+
+
+# =========================================================
+# Snapshot insert
+# =========================================================
+
+INSERT_SNAPSHOT_SQL = """
+INSERT INTO query_snapshots (
+    captured_at,
+    dbid,
+    userid,
+    database_name,
+    queryid,
+    toplevel,
+    calls,
+    total_exec_time,
+    mean_exec_time,
+    rows,
+    shared_blks_hit,
+    shared_blks_read,
+    temp_blks_written,
+    wal_bytes,
+    query_text
+)
+VALUES (
+    %(captured_at)s,
+    %(dbid)s,
+    %(userid)s,
+    %(database_name)s,
+    %(queryid)s,
+    %(toplevel)s,
+    %(calls)s,
+    %(total_exec_time)s,
+    %(mean_exec_time)s,
+    %(rows)s,
+    %(shared_blks_hit)s,
+    %(shared_blks_read)s,
+    %(temp_blks_written)s,
+    %(wal_bytes)s,
+    %(query_text)s
+);
+"""
+
+
+# =========================================================
+# Delta insert
+# =========================================================
+
+INSERT_DELTA_SQL = """
+WITH previous AS (
+
+    SELECT DISTINCT ON (
+        dbid,
+        userid,
+        queryid,
+        toplevel
+    )
+        dbid,
+        userid,
+        queryid,
+        toplevel,
+        calls,
+        total_exec_time,
+        rows,
+        shared_blks_hit,
+        shared_blks_read,
+        temp_blks_written,
+        wal_bytes
+
+    FROM query_snapshots
+
+    WHERE captured_at < %(captured_at)s
+
+    ORDER BY
+        dbid,
+        userid,
+        queryid,
+        toplevel,
+        captured_at DESC
+)
+
+INSERT INTO query_deltas (
+    captured_at,
+    dbid,
+    userid,
+    database_name,
+    queryid,
+    toplevel,
+    calls_delta,
+    exec_time_delta,
+    rows_delta,
+    shared_hits_delta,
+    shared_reads_delta,
+    temp_written_delta,
+    wal_bytes_delta,
+    avg_exec_ms,
+    cache_hit_pct,
+    query_text
+)
+
+SELECT
+    s.captured_at,
+    s.dbid,
+    s.userid,
+    s.database_name,
+    s.queryid,
+    s.toplevel,
+
+    s.calls - p.calls,
+    s.total_exec_time - p.total_exec_time,
+    s.rows - p.rows,
+    s.shared_blks_hit - p.shared_blks_hit,
+    s.shared_blks_read - p.shared_blks_read,
+    s.temp_blks_written - p.temp_blks_written,
+    s.wal_bytes - p.wal_bytes,
+
+    CASE
+        WHEN s.calls - p.calls > 0
+        THEN
+            (s.total_exec_time - p.total_exec_time)
+            /
+            (s.calls - p.calls)
+        ELSE 0
+    END,
+
+    CASE
+        WHEN
+            (s.shared_blks_hit - p.shared_blks_hit)
+            +
+            (s.shared_blks_read - p.shared_blks_read) > 0
+        THEN
+            100.0 *
+            (s.shared_blks_hit - p.shared_blks_hit)
+            /
+            (
+                (s.shared_blks_hit - p.shared_blks_hit)
+                +
+                (s.shared_blks_read - p.shared_blks_read)
+            )
+        ELSE 100
+    END,
+
+    s.query_text
+
+FROM query_snapshots s
+
+JOIN previous p
+  ON p.dbid = s.dbid
+ AND p.userid = s.userid
+ AND p.queryid = s.queryid
+ AND p.toplevel = s.toplevel
+
+WHERE s.captured_at = %(captured_at)s
+
+AND s.calls >= p.calls
+AND s.total_exec_time >= p.total_exec_time
+
+AND (
+       s.calls > p.calls
+    OR s.total_exec_time > p.total_exec_time
+);
+"""
+
+
+# =========================================================
+# Advisor input
+# =========================================================
+
+ADVISOR_SQL = """
+SELECT
+    captured_at,
+    dbid,
+    userid,
+    database_name,
+    queryid,
+    calls_delta,
+    exec_time_delta,
+    avg_exec_ms,
+    shared_reads_delta,
+    cache_hit_pct,
+    temp_written_delta,
+    wal_bytes_delta,
+    query_text
+
+FROM query_deltas
+
+WHERE captured_at = (
+    SELECT max(captured_at)
+    FROM query_deltas
+)
+
+ORDER BY exec_time_delta DESC
+
+LIMIT 100;
+"""
+
+
+# =========================================================
+# Finding insert
+# =========================================================
+
+INSERT_FINDING_SQL = """
+INSERT INTO findings (
+    captured_at,
+    severity,
+    finding_type,
+    database_name,
+    dbid,
+    userid,
+    queryid,
+    metric_value,
+    threshold_value,
+    message,
+    recommendation,
+    query_text
+)
+VALUES (
+    %(captured_at)s,
+    %(severity)s,
+    %(finding_type)s,
+    %(database_name)s,
+    %(dbid)s,
+    %(userid)s,
+    %(queryid)s,
+    %(metric_value)s,
+    %(threshold_value)s,
+    %(message)s,
+    %(recommendation)s,
+    %(query_text)s
+);
+"""
+
+
+# =========================================================
+# Connections
+# =========================================================
+
+def source_connection():
+    return psycopg.connect(
+        host=SOURCE_HOST,
+        port=SOURCE_PORT,
+        dbname=SOURCE_DB,
+        user=SOURCE_USER,
+        password=SOURCE_PASSWORD,
+        row_factory=dict_row,
+    )
+
+
+def store_connection(row_factory=None):
+    return psycopg.connect(
+        host=STORE_HOST,
+        port=STORE_PORT,
+        dbname=STORE_DB,
+        user=STORE_USER,
+        password=STORE_PASSWORD,
+        row_factory=row_factory,
+    )
+
+
+# =========================================================
+# Collection
+# =========================================================
+
+def collect_queries():
+    captured_at = datetime.now(timezone.utc)
+
+    with source_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                QUERY_SQL,
+                (
+                    STORE_DB,
+                    SOURCE_USER,
+                    STORE_USER,
+                    QUERY_LIMIT,
+                ),
+            )
+            rows = cur.fetchall()
+
+    for row in rows:
+        row["captured_at"] = captured_at
+
+    return captured_at, rows
+
+
+# =========================================================
+# Storage
+# =========================================================
+
+def store_snapshots_and_deltas(captured_at, rows):
+    if not rows:
+        return 0
+
+    with store_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.executemany(
+                INSERT_SNAPSHOT_SQL,
+                rows,
+            )
+
+            cur.execute(
+                INSERT_DELTA_SQL,
+                {"captured_at": captured_at},
+            )
+
+        conn.commit()
+
+    return len(rows)
+
+
+# =========================================================
+# Recommendation engine
+# =========================================================
+
+def recommendation_for(finding_type):
+    recommendations = {
+
+        "SLOW_QUERY": (
+            "Review EXPLAIN (ANALYZE, BUFFERS), index usage and row estimates. "
+            "Check for sequential scans, inefficient joins, sorting, and stale statistics."
+        ),
+
+        "DOMINANT_QUERY": (
+            "Review why this statement dominates database workload. "
+            "Check execution plan, call frequency, concurrency, lock contention, "
+            "index efficiency, and whether application batching is possible."
+        ),
+
+        "HIGH_IO": (
+            "Review EXPLAIN (ANALYZE, BUFFERS) and index usage. "
+            "Check for unnecessary sequential scans, poor selectivity, large table reads, "
+            "and whether the working set exceeds available cache."
+        ),
+
+        "LOW_CACHE_HIT": (
+            "Investigate why this statement requires physical reads. "
+            "Check table and index size, access patterns, memory configuration, "
+            "query selectivity, and whether a better index could reduce reads."
+        ),
+
+        "TEMP_SPILL": (
+            "Check sorts, hashes and aggregate operations in the execution plan. "
+            "Review work_mem carefully and look for inefficient joins or large intermediate results."
+        ),
+
+        "HIGH_WAL": (
+            "Review update and insert frequency, HOT update efficiency, indexes on frequently "
+            "updated columns, large transactions, checkpoint pressure and replication impact."
+        ),
+    }
+
+    return recommendations.get(
+        finding_type,
+        "Review the statement and related PostgreSQL statistics."
+    )
+
+
+# =========================================================
+# Finding helper
+# =========================================================
+
+def make_finding(
+    row,
+    severity,
+    finding_type,
+    metric_value,
+    threshold_value,
+    message,
+):
+    return {
+        "captured_at": row["captured_at"],
+        "severity": severity,
+        "finding_type": finding_type,
+        "database_name": row["database_name"],
+        "dbid": row["dbid"],
+        "userid": row["userid"],
+        "queryid": row["queryid"],
+        "metric_value": float(metric_value),
+        "threshold_value": float(threshold_value),
+        "message": message,
+        "recommendation": recommendation_for(finding_type),
+        "query_text": row["query_text"],
+    }
+
+
+# =========================================================
+# Advisor
+# =========================================================
+
+def analyze_latest():
+    with store_connection(row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(ADVISOR_SQL)
+            rows = cur.fetchall()
+
+    if not rows:
+        return 0
+
+    total_exec_by_database = {}
+
+    for row in rows:
+        db = row["database_name"]
+
+        total_exec_by_database.setdefault(db, 0)
+
+        total_exec_by_database[db] += (
+            row["exec_time_delta"] or 0
+        )
+
+    findings = []
+
+    for row in rows:
+
+        db = row["database_name"]
+        calls = row["calls_delta"] or 0
+        exec_ms = row["exec_time_delta"] or 0
+        avg_ms = row["avg_exec_ms"] or 0
+        reads = row["shared_reads_delta"] or 0
+
+        cache_pct = (
+            row["cache_hit_pct"]
+            if row["cache_hit_pct"] is not None
+            else 100
+        )
+
+        temp_blocks = row["temp_written_delta"] or 0
+        wal_bytes = float(row["wal_bytes_delta"] or 0)
+        wal_mb = wal_bytes / 1024 / 1024
+
+        if avg_ms > SLOW_QUERY_MS:
+            findings.append(
+                make_finding(
+                    row,
+                    "WARNING",
+                    "SLOW_QUERY",
+                    avg_ms,
+                    SLOW_QUERY_MS,
+                    (
+                        f"Query averages {avg_ms:.2f} ms "
+                        f"per execution across {calls} calls."
+                    ),
+                )
+            )
+
+        db_total = total_exec_by_database.get(db, 0)
+
+        if db_total > 0:
+
+            workload_pct = (
+                exec_ms / db_total
+            ) * 100
+
+            if (
+                workload_pct > DOMINANT_QUERY_PCT
+                and exec_ms > DOMINANT_QUERY_MIN_MS
+            ):
+
+                severity = (
+                    "CRITICAL"
+                    if workload_pct >= 70
+                    else "WARNING"
+                )
+
+                findings.append(
+                    make_finding(
+                        row,
+                        severity,
+                        "DOMINANT_QUERY",
+                        workload_pct,
+                        DOMINANT_QUERY_PCT,
+                        (
+                            f"Query consumed {workload_pct:.1f}% "
+                            f"of total execution time in database {db}."
+                        ),
+                    )
+                )
+
+        if reads > HIGH_READ_BLOCKS:
+            findings.append(
+                make_finding(
+                    row,
+                    "WARNING",
+                    "HIGH_IO",
+                    reads,
+                    HIGH_READ_BLOCKS,
+                    (
+                        f"Query performed {reads} shared block reads "
+                        f"during the interval."
+                    ),
+                )
+            )
+
+        if (
+            cache_pct < LOW_CACHE_PCT
+            and reads > 100
+        ):
+            findings.append(
+                make_finding(
+                    row,
+                    "WARNING",
+                    "LOW_CACHE_HIT",
+                    cache_pct,
+                    LOW_CACHE_PCT,
+                    (
+                        f"Query cache hit ratio was {cache_pct:.1f}%."
+                    ),
+                )
+            )
+
+        if temp_blocks > HIGH_TEMP_BLOCKS:
+            findings.append(
+                make_finding(
+                    row,
+                    "WARNING",
+                    "TEMP_SPILL",
+                    temp_blocks,
+                    HIGH_TEMP_BLOCKS,
+                    (
+                        f"Query wrote {temp_blocks} temporary blocks."
+                    ),
+                )
+            )
+
+        if wal_mb > HIGH_WAL_MB:
+            findings.append(
+                make_finding(
+                    row,
+                    "WARNING",
+                    "HIGH_WAL",
+                    wal_mb,
+                    HIGH_WAL_MB,
+                    (
+                        f"Query generated {wal_mb:.2f} MB WAL "
+                        f"during the interval."
+                    ),
+                )
+            )
+
+    if not findings:
+        return 0
+
+    with store_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.executemany(
+                INSERT_FINDING_SQL,
+                findings,
+            )
+
+        conn.commit()
+
+    for finding in findings:
+
+        log.warning(
+            "%s %s db=%s queryid=%s value=%.2f",
+            finding["severity"],
+            finding["finding_type"],
+            finding["database_name"],
+            finding["queryid"],
+            finding["metric_value"],
+        )
+
+    return len(findings)
+
+
+# =========================================================
+# Collection cycle
+# =========================================================
+
+def collect_once():
+    captured_at, rows = collect_queries()
+
+    stored = store_snapshots_and_deltas(
+        captured_at,
+        rows,
+    )
+
+    findings = analyze_latest()
+
+    log.info(
+        "Collected %s snapshots, created %s findings",
+        stored,
+        findings,
+    )
+
+
+# =========================================================
+# Main
+# =========================================================
+
+def main():
+    log.info("PgScope Collector v0.7 starting")
+    log.info(
+        "Source: %s:%s/%s",
+        SOURCE_HOST,
+        SOURCE_PORT,
+        SOURCE_DB,
+    )
+    log.info(
+        "Storage: %s:%s/%s",
+        STORE_HOST,
+        STORE_PORT,
+        STORE_DB,
+    )
+    log.info(
+        "Interval: %s seconds",
+        INTERVAL,
+    )
+
+    while True:
+
+        started = time.monotonic()
+
+        try:
+            collect_once()
+
+        except psycopg.Error:
+            log.exception("PostgreSQL error")
+
+        except Exception:
+            log.exception("Unexpected collector error")
+
+        elapsed = time.monotonic() - started
+        sleep_time = max(
+            0,
+            INTERVAL - elapsed,
+        )
+
+        try:
+            time.sleep(sleep_time)
+
+        except KeyboardInterrupt:
+            log.info("PgScope Collector stopped")
+            break
+
+
+if __name__ == "__main__":
+    main()

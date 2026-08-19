@@ -1,0 +1,9 @@
+collector:
+  interval_seconds: 30
+  query_limit: 200
+
+retention:
+  snapshots_days: 7
+  deltas_days: 30
+  findings_days: 90
+  cleanup_interval_minutes: 60

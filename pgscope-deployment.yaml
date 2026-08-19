@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: pgscope-collector
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: pgscope-collector
+
+  template:
+    metadata:
+      labels:
+        app: pgscope-collector
+
+    spec:
+      containers:
+        - name: collector
+          image: pgscope-collector:0.8
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: PGSCOPE_CONFIG
+              value: "/etc/pgscope/pgscope.yaml"
+
+            - name: PGSCOPE_CNPG_LAB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pgscope-db
+                  key: source-password
+
+            - name: PGSCOPE_CNPG_LAB2_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pgscope-db
+                  key: lab2-source-password
+
+            - name: PGSCOPE_STORE_HOST
+              value: "pg-lab-rw"
+
+            - name: PGSCOPE_STORE_PORT
+              value: "5432"
+
+            - name: PGSCOPE_STORE_DB
+              value: "pgscope"
+
+            - name: PGSCOPE_STORE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pgscope-db
+                  key: store-user
+
+            - name: PGSCOPE_STORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pgscope-db
+                  key: store-password
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgscope
+              readOnly: true
+
+      volumes:
+        - name: config
+          configMap:
+            name: pgscope-config
