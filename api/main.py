@@ -1328,6 +1328,104 @@ def query_history(
 
 
 
+@app.get("/api/query-details/{queryid}")
+def query_details(
+    queryid: int,
+    cluster_id: str,
+    database: str,
+    minutes: int = Query(default=60, ge=1, le=1440),
+):
+    metrics_sql = """
+    SELECT
+        cluster_id,
+        MAX(cluster_name) AS cluster_name,
+        database_name,
+        queryid::text AS queryid,
+        SUM(calls_delta) AS calls,
+        ROUND(SUM(exec_time_delta)::numeric, 2) AS total_exec_ms,
+        ROUND(
+            (SUM(exec_time_delta) / NULLIF(SUM(calls_delta), 0))::numeric,
+            2
+        ) AS avg_exec_ms,
+        SUM(shared_reads_delta) AS shared_reads,
+        ROUND(AVG(cache_hit_pct)::numeric, 2) AS avg_cache_hit_pct,
+        SUM(temp_written_delta) AS temp_blocks,
+        ROUND((SUM(wal_bytes_delta) / 1024 / 1024)::numeric, 2) AS wal_mb,
+        MIN(captured_at) AS first_seen,
+        MAX(captured_at) AS last_seen,
+        MAX(query_text) AS query_text
+    FROM query_deltas
+    WHERE queryid = %s
+      AND cluster_id = %s::text
+      AND database_name = %s::text
+      AND captured_at >= now() - (%s * interval '1 minute')
+    GROUP BY cluster_id, database_name, queryid
+    """
+
+    findings_sql = """
+    WITH ranked AS (
+        SELECT
+            captured_at,
+            severity,
+            finding_type,
+            metric_value,
+            threshold_value,
+            message,
+            recommendation,
+            COUNT(*) OVER (
+                PARTITION BY finding_type
+            ) AS occurrences,
+            ROW_NUMBER() OVER (
+                PARTITION BY finding_type
+                ORDER BY captured_at DESC, id DESC
+            ) AS rn
+        FROM findings
+        WHERE queryid = %s
+          AND cluster_id = %s::text
+          AND database_name = %s::text
+          AND captured_at >= now() - (%s * interval '1 minute')
+    )
+    SELECT
+        captured_at,
+        severity,
+        finding_type,
+        metric_value,
+        threshold_value,
+        message,
+        recommendation,
+        occurrences
+    FROM ranked
+    WHERE rn = 1
+    ORDER BY captured_at DESC
+    LIMIT 10
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                metrics_sql,
+                (queryid, cluster_id, database, minutes),
+            )
+            metrics = cur.fetchone()
+
+            if not metrics:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No query data found for the selected time range.",
+                )
+
+            cur.execute(
+                findings_sql,
+                (queryid, cluster_id, database, minutes),
+            )
+            related_findings = cur.fetchall()
+
+    return {
+        "query": metrics,
+        "findings": related_findings,
+    }
+
+
 class ClusterTestRequest(BaseModel):
     host: str
     port: int = 5432
@@ -2054,10 +2152,61 @@ th {
 
 .query-click {
     cursor: pointer;
+    color: #60a5fa;
+    transition: color 0.15s ease;
 }
 
 .query-click:hover {
     color: #93c5fd;
+    text-decoration: underline;
+}
+
+.query-details-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin: 16px 0 20px;
+}
+
+.query-detail-card {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.query-detail-card .label {
+    color: #94a3b8;
+    font-size: 12px;
+    margin-bottom: 5px;
+}
+
+.query-detail-card .value {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.severity-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.severity-critical {
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+}
+
+.severity-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fcd34d;
+}
+
+.query-details-findings {
+    width: 100%;
+    margin-top: 10px;
 }
 
 .explain-modal-bg {
@@ -2275,6 +2424,24 @@ canvas {
 </div>
 </div>
 
+
+<div id="query-details-modal" class="explain-modal-bg">
+<div class="explain-modal">
+<h2>Query Details</h2>
+<div id="query-details-status" class="form-status">Loading...</div>
+<div id="query-details-content" style="display:none">
+<div id="query-details-sql" class="history-query"></div>
+<div id="query-details-metrics" class="query-details-metrics"></div>
+<h3>Recent Findings</h3>
+<div id="query-details-findings"></div>
+<div class="modal-actions" style="margin-top:18px">
+<button class="history-button" onclick="queryDetailsHistory()">History</button>
+<button class="explain-button" onclick="queryDetailsExplain()">Explain</button>
+<button onclick="hideQueryDetailsModal()">Close</button>
+</div>
+</div>
+</div>
+</div>
 
 <div id="explain-modal" class="explain-modal-bg">
 <div class="explain-modal">
@@ -3131,6 +3298,149 @@ async function saveAddCluster() {
 }
 
 
+let queryDetailsQueryId = null;
+
+function hideQueryDetailsModal() {
+    document.getElementById('query-details-modal').style.display = 'none';
+}
+
+function queryDetailsHistory() {
+    if (!queryDetailsQueryId) return;
+    hideQueryDetailsModal();
+    loadHistory(queryDetailsQueryId);
+}
+
+function queryDetailsExplain() {
+    if (!queryDetailsQueryId) return;
+    hideQueryDetailsModal();
+    showExplainModal(queryDetailsQueryId);
+}
+
+function formatCount(value) {
+    if (value === null || value === undefined) return '-';
+    return Number(value).toLocaleString('en-US');
+}
+
+function formatDurationMs(value) {
+    if (value === null || value === undefined) return '-';
+    const n = Number(value);
+
+    if (n >= 1000) {
+        return (n / 1000).toFixed(2) + ' s';
+    }
+
+    return n.toFixed(2) + ' ms';
+}
+
+function findingTypeLabel(value) {
+    return String(value || '')
+        .toLowerCase()
+        .replaceAll('_', ' ')
+        .replace(/^./, c => c.toUpperCase());
+}
+
+function severityBadge(value) {
+    const severity = String(value || '').toUpperCase();
+    const cssClass =
+        severity === 'CRITICAL'
+            ? 'severity-critical'
+            : severity === 'WARNING'
+                ? 'severity-warning'
+                : '';
+
+    return `<span class="severity-badge ${cssClass}">${escapeHtml(severity)}</span>`;
+}
+
+function queryDetailValue(label, value, suffix = '') {
+    const shown = (value === null || value === undefined || value === '') ? '-' : value;
+    return `
+<div class="query-detail-card">
+  <div class="label">${escapeHtml(label)}</div>
+  <div class="value">${escapeHtml(String(shown))}${suffix}</div>
+</div>`;
+}
+
+async function showQueryDetailsModal(queryid) {
+    queryDetailsQueryId = queryid;
+
+    const modal = document.getElementById('query-details-modal');
+    const status = document.getElementById('query-details-status');
+    const content = document.getElementById('query-details-content');
+
+    modal.style.display = 'flex';
+    status.innerText = 'Loading query details...';
+    content.style.display = 'none';
+
+    const cluster = currentCluster();
+    const database = currentDatabase();
+    const minutes = currentMinutes();
+
+    try {
+        const response = await fetch(
+            '/api/query-details/' + encodeURIComponent(queryid)
+            + '?cluster_id=' + encodeURIComponent(cluster)
+            + '&database=' + encodeURIComponent(database)
+            + '&minutes=' + minutes
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.detail || ('Query details API returned ' + response.status));
+        }
+
+        const q = data.query;
+        document.getElementById('query-details-sql').innerText =
+            q.query_text || ('Query ' + queryid);
+
+        document.getElementById('query-details-metrics').innerHTML =
+            queryDetailValue('Calls', formatCount(q.calls))
+            + queryDetailValue('Total execution', formatDurationMs(q.total_exec_ms))
+            + queryDetailValue('Average latency', formatDurationMs(q.avg_exec_ms))
+            + queryDetailValue('Shared reads', q.shared_reads)
+            + queryDetailValue('Cache hit', q.avg_cache_hit_pct, '%')
+            + queryDetailValue('Temp blocks', q.temp_blocks)
+            + queryDetailValue('WAL', q.wal_mb, ' MB')
+            + queryDetailValue('Last seen', q.last_seen ? new Date(q.last_seen).toLocaleString() : '-');
+
+        const findings = data.findings || [];
+        const findingsBox = document.getElementById('query-details-findings');
+
+        if (!findings.length) {
+            findingsBox.innerHTML = '<div class="form-help">No findings for this query in the selected time range.</div>';
+        } else {
+            findingsBox.innerHTML = `
+<table class="query-details-findings">
+<thead>
+<tr>
+<th>Last seen</th>
+<th>Severity</th>
+<th>Type</th>
+<th>Occurrences</th>
+<th>Message</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>${findings.map(f => `
+<tr>
+<td>${new Date(f.captured_at).toLocaleTimeString()}</td>
+<td>${severityBadge(f.severity)}</td>
+<td>${escapeHtml(findingTypeLabel(f.finding_type))}</td>
+<td>${escapeHtml(String(f.occurrences ?? 1))}</td>
+<td>${escapeHtml(f.message || '')}</td>
+<td class="recommendation">${escapeHtml(f.recommendation || '')}</td>
+</tr>`).join('')}</tbody>
+</table>`;
+        }
+
+        status.innerText =
+            'Query ' + queryid + ' · ' + cluster + ' / ' + database + ' · last ' + minutes + ' min';
+        content.style.display = 'block';
+    } catch (error) {
+        status.innerText = 'Unable to load query details: ' + error.message;
+    }
+}
+
 let explainQueryId = null;
 let explainRequiredParameters = 0;
 
@@ -3417,7 +3727,7 @@ document.getElementById(
                 queryCell.dataset.queryid;
 
             if (queryid) {
-                showExplainModal(
+                showQueryDetailsModal(
                     queryid
                 );
             }
