@@ -66,13 +66,9 @@ spec:
 
               echo "Running PgScope migrations..."
 
-              if psql -tAc "SELECT to_regclass('public.findings') IS NULL" | grep -q t; then
-                echo "Creating PgScope base schema..."
-                psql -v ON_ERROR_STOP=1 \
-                  -f /migrations/001_schema.sql
-              else
-                echo "PgScope base schema already exists; skipping 001_schema.sql"
-              fi
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/001_schema.sql
 
               psql \
                 -v ON_ERROR_STOP=1 \

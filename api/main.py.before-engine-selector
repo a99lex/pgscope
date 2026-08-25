@@ -2889,11 +2889,6 @@ Close
 <div id="cluster-overview" class="overview-grid"></div>
 
 <div class="toolbar">
-<label>Engine</label>
-<select id="engine-select">
-<option value="postgresql">PostgreSQL</option>
-<option value="oracle">Oracle</option>
-</select>
 <label>Cluster</label>
 <select id="cluster-select"></select>
 
@@ -2916,7 +2911,7 @@ Close
 <div id="refresh-status" class="status">Ready</div>
 </div>
 
-<div class="cards" id="pg-summary-cards">
+<div class="cards">
 <div class="card">
 <div class="card-title">Findings last hour</div>
 <div id="findings-count" class="card-value">-</div>
@@ -2938,7 +2933,7 @@ Close
 </div>
 </div>
 
-<div class="panel" id="pg-findings-panel">
+<div class="panel">
 <h2>Latest Findings</h2>
 
 <table>
@@ -2956,7 +2951,7 @@ Close
 </table>
 </div>
 
-<div class="panel" id="pg-top-queries-panel">
+<div class="panel">
 <h2>Top Queries</h2>
 
 <table>
@@ -2976,83 +2971,6 @@ Close
 </thead>
 <tbody id="queries-table"></tbody>
 </table>
-</div>
-
-
-<div id="oracle-dashboard" style="display:none">
-
-<div class="panel">
-<h2>Oracle Top SQL</h2>
-<table>
-<thead>
-<tr>
-<th>SQL ID</th>
-<th>Executions</th>
-<th>Elapsed ms</th>
-<th>CPU ms</th>
-<th>Avg ms</th>
-<th>Buffer Gets</th>
-<th>Disk Reads</th>
-<th>Rows</th>
-<th>SQL</th>
-</tr>
-</thead>
-<tbody id="oracle-top-sql-table"></tbody>
-</table>
-</div>
-
-<div class="panel">
-<h2>Oracle Sessions</h2>
-<table>
-<thead>
-<tr>
-<th>SID</th>
-<th>Serial#</th>
-<th>User</th>
-<th>Status</th>
-<th>SQL ID</th>
-<th>Event</th>
-<th>Wait Class</th>
-<th>Machine</th>
-<th>Program</th>
-</tr>
-</thead>
-<tbody id="oracle-sessions-table"></tbody>
-</table>
-</div>
-
-<div class="panel">
-<h2>Blocking Sessions</h2>
-<table>
-<thead>
-<tr>
-<th>SID</th>
-<th>User</th>
-<th>SQL ID</th>
-<th>Event</th>
-<th>Wait Class</th>
-<th>Seconds Waiting</th>
-<th>Blocking SID</th>
-</tr>
-</thead>
-<tbody id="oracle-blocking-table"></tbody>
-</table>
-</div>
-
-<div class="panel">
-<h2>Wait Events</h2>
-<table>
-<thead>
-<tr>
-<th>Wait Class</th>
-<th>Total Waits</th>
-<th>Time Waited ms</th>
-</tr>
-</thead>
-<tbody id="oracle-waits-table"></tbody>
-</table>
-</div>
-
 </div>
 
 <div class="panel" id="history-panel">
@@ -3114,10 +3032,6 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text || '';
     return div.innerHTML;
-}
-
-function currentEngine() {
-    return document.getElementById("engine-select").value;
 }
 
 function currentCluster() {
@@ -3213,13 +3127,8 @@ ${cluster.performance_status}
 }
 
 async function loadClusters() {
-    const engine = currentEngine();
-
-    const response = await fetch(
-        engine === 'oracle'
-            ? '/api/oracle/databases'
-            : '/api/clusters'
-    );
+    const response = await fetch('/api/clusters');
+    const oracleResponse = await fetch('/api/oracle/databases');
 
     if (!response.ok) {
         throw new Error(
@@ -3229,20 +3138,24 @@ async function loadClusters() {
 
     const rows = await response.json();
     const select = document.getElementById('cluster-select');
+    const oracleRows = oracleResponse.ok ? await oracleResponse.json() : [];
+    const knownClusters = new Set(rows.map(r => r.cluster_id));
+    oracleRows.forEach(row => {
+        if (!knownClusters.has(row.cluster_id)) {
+            rows.push({
+                cluster_id: row.cluster_id,
+                cluster_name: row.cluster_name || row.cluster_id
+            });
+            knownClusters.add(row.cluster_id);
+        }
+    });
     const previous = select.value;
 
     select.innerHTML = '';
 
-    const seen = new Set();
-
     rows.forEach(row => {
-        if (seen.has(row.cluster_id)) {
-            return;
-        }
-
-        seen.add(row.cluster_id);
-
         const option = document.createElement('option');
+
         option.value = row.cluster_id;
         option.textContent = row.cluster_name || row.cluster_id;
 
@@ -3255,13 +3168,10 @@ async function loadClusters() {
 }
 
 async function loadDatabases() {
-    const engine = currentEngine();
     const cluster = currentCluster();
 
     const response = await fetch(
-        engine === 'oracle'
-            ? '/api/oracle/databases'
-            : '/api/databases?cluster_id=' + encodeURIComponent(cluster)
+        (cluster.startsWith('oracle-') ? '/api/oracle/databases' : '/api/databases?cluster_id=' + encodeURIComponent(cluster))
     );
 
     if (!response.ok) {
@@ -3271,11 +3181,9 @@ async function loadDatabases() {
     }
 
     const rows = await response.json();
-
-    const databaseRows = engine === 'oracle'
+    const databaseRows = cluster.startsWith("oracle-")
         ? rows.filter(row => row.cluster_id === cluster)
         : rows;
-
     const select = document.getElementById('database-select');
     const previous = select.value;
 
@@ -3283,6 +3191,7 @@ async function loadDatabases() {
 
     databaseRows.forEach(row => {
         const option = document.createElement('option');
+
         option.value = row.database_name;
         option.textContent = row.database_name;
 
@@ -3291,7 +3200,6 @@ async function loadDatabases() {
             ||
             (
                 !previous
-                && engine === 'postgresql'
                 && row.database_name === 'bench'
             )
         ) {
@@ -3613,165 +3521,7 @@ function drawChart(canvasId, rows, field) {
     );
 }
 
-
-async function loadOracleDashboard() {
-    const cluster = currentCluster();
-    const database = currentDatabase();
-    const minutes = currentMinutes();
-
-    const [topSqlRes, sessionsRes, blockingRes, waitsRes] = await Promise.all([
-        fetch(
-            '/api/oracle/top-sql'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-            + '&minutes=' + minutes
-            + '&limit=20'
-        ),
-        fetch(
-            '/api/oracle/sessions'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-        ),
-        fetch(
-            '/api/oracle/blocking'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-        ),
-        fetch(
-            '/api/oracle/waits'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-        )
-    ]);
-
-    if (!topSqlRes.ok) {
-        throw new Error('Oracle Top SQL API failed: ' + topSqlRes.status);
-    }
-    if (!sessionsRes.ok) {
-        throw new Error('Oracle Sessions API failed: ' + sessionsRes.status);
-    }
-    if (!blockingRes.ok) {
-        throw new Error('Oracle Blocking API failed: ' + blockingRes.status);
-    }
-    if (!waitsRes.ok) {
-        throw new Error('Oracle Waits API failed: ' + waitsRes.status);
-    }
-
-    const topSql = await topSqlRes.json();
-    const sessions = await sessionsRes.json();
-    const blocking = await blockingRes.json();
-    const waits = await waitsRes.json();
-
-    const topSqlTable = document.getElementById('oracle-top-sql-table');
-    topSqlTable.innerHTML = '';
-
-    topSql.forEach(q => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${escapeHtml(q.sql_id)}</td>
-<td>${q.executions}</td>
-<td>${q.elapsed_ms}</td>
-<td>${q.cpu_ms}</td>
-<td>${q.avg_exec_ms}</td>
-<td>${q.buffer_gets}</td>
-<td>${q.disk_reads}</td>
-<td>${q.rows}</td>
-<td class="query">${escapeHtml(q.query_text)}</td>
-`;
-        topSqlTable.appendChild(row);
-    });
-
-    const sessionsTable = document.getElementById('oracle-sessions-table');
-    sessionsTable.innerHTML = '';
-
-    sessions.forEach(s => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${s.sid ?? '-'}</td>
-<td>${s.serial_number ?? '-'}</td>
-<td>${escapeHtml(s.username || '')}</td>
-<td>${escapeHtml(s.status || '')}</td>
-<td>${escapeHtml(s.sql_id || '')}</td>
-<td>${escapeHtml(s.event || '')}</td>
-<td>${escapeHtml(s.wait_class || '')}</td>
-<td>${escapeHtml(s.machine || '')}</td>
-<td>${escapeHtml(s.program || '')}</td>
-`;
-        sessionsTable.appendChild(row);
-    });
-
-    const blockingTable = document.getElementById('oracle-blocking-table');
-    blockingTable.innerHTML = '';
-
-    blocking.forEach(s => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${s.sid ?? '-'}</td>
-<td>${escapeHtml(s.username || '')}</td>
-<td>${escapeHtml(s.sql_id || '')}</td>
-<td>${escapeHtml(s.event || '')}</td>
-<td>${escapeHtml(s.wait_class || '')}</td>
-<td>${s.seconds_in_wait ?? '-'}</td>
-<td>${s.blocking_session ?? '-'}</td>
-`;
-        blockingTable.appendChild(row);
-    });
-
-    const waitsTable = document.getElementById('oracle-waits-table');
-    waitsTable.innerHTML = '';
-
-    waits.forEach(w => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${escapeHtml(w.wait_class || '')}</td>
-<td>${w.total_waits ?? '-'}</td>
-<td>${w.time_waited_ms ?? '-'}</td>
-`;
-        waitsTable.appendChild(row);
-    });
-}
-
-function updateEnginePanels() {
-    const oracle = currentEngine() === 'oracle';
-
-    document.getElementById('pg-summary-cards').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('pg-findings-panel').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('pg-top-queries-panel').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('history-panel').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('oracle-dashboard').style.display =
-        oracle ? 'block' : 'none';
-
-    document.getElementById('generate-report-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('add-database-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('disable-database-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('disable-cluster-button').style.display =
-        oracle ? 'none' : '';
-}
-
 async function refreshDetail() {
-    const engine = currentEngine();
-
-    updateEnginePanels();
-
-    if (engine === 'oracle') {
-        await loadOracleDashboard();
-        return;
-    }
-
     await loadSummary();
     await loadFindings();
     await loadQueries();
@@ -3796,13 +3546,6 @@ async function refreshAll() {
         status.innerText = error.message;
     }
 }
-
-async function engineChanged() {
-    await loadClusters();
-    await loadDatabases();
-    await refreshDetail();
-}
-
 
 async function clusterChanged() {
     await loadDatabases();
@@ -4481,13 +4224,6 @@ async function start() {
     await loadDatabases();
     await refreshAll();
 }
-
-document.getElementById(
-    'engine-select'
-).addEventListener(
-    'change',
-    engineChanged
-);
 
 document.getElementById(
     'refresh-button'

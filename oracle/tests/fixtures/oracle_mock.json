@@ -1,0 +1,71 @@
+{
+  "instance_number": 1,
+  "database_name": "FREEPDB1",
+  "queries": [
+    {
+      "sql_id": "8u5x1abc12345",
+      "parsing_schema": "SHOP",
+      "executions": 1250,
+      "elapsed_ms": 98500.0,
+      "cpu_ms": 41200.0,
+      "buffer_gets": 520000,
+      "disk_reads": 24000,
+      "rows_processed": 1250,
+      "fetches": 1250,
+      "sorts": 0,
+      "query_text": "select * from orders where customer_id = :1"
+    },
+    {
+      "sql_id": "1slowabc67890",
+      "parsing_schema": "SHOP",
+      "executions": 80,
+      "elapsed_ms": 64000.0,
+      "cpu_ms": 18000.0,
+      "buffer_gets": 850000,
+      "disk_reads": 98000,
+      "rows_processed": 450000,
+      "fetches": 80,
+      "sorts": 22,
+      "query_text": "select o.* from orders o join order_lines l on l.order_id=o.id where l.sku=:1"
+    }
+  ],
+  "sessions": [
+    {
+      "instance_id": 1,
+      "sid": 142,
+      "serial_number": 3812,
+      "username": "SHOP",
+      "status": "ACTIVE",
+      "sql_id": "1slowabc67890",
+      "event": "db file sequential read",
+      "wait_class": "User I/O",
+      "state": "WAITING",
+      "seconds_in_wait": 3,
+      "blocking_instance": null,
+      "blocking_session": null,
+      "machine": "app01",
+      "program": "JDBC Thin Client"
+    },
+    {
+      "instance_id": 1,
+      "sid": 201,
+      "serial_number": 991,
+      "username": "SHOP",
+      "status": "ACTIVE",
+      "sql_id": "8u5x1abc12345",
+      "event": "enq: TX - row lock contention",
+      "wait_class": "Application",
+      "state": "WAITING",
+      "seconds_in_wait": 17,
+      "blocking_instance": 1,
+      "blocking_session": 142,
+      "machine": "app02",
+      "program": "JDBC Thin Client"
+    }
+  ],
+  "waits": [
+    {"wait_class": "User I/O", "total_waits": 58201, "time_waited_ms": 382001.0},
+    {"wait_class": "Application", "total_waits": 1280, "time_waited_ms": 91500.0},
+    {"wait_class": "Commit", "total_waits": 31200, "time_waited_ms": 44200.0}
+  ]
+}

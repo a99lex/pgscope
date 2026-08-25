@@ -27,7 +27,7 @@ SET default_table_access_method = heap;
 -- Name: findings; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.findings (
+CREATE TABLE IF NOT EXISTS public.findings (
     id bigint NOT NULL,
     captured_at timestamp with time zone NOT NULL,
     severity text NOT NULL,
@@ -64,7 +64,7 @@ ALTER TABLE public.findings ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
 -- Name: monitored_clusters; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.monitored_clusters (
+CREATE TABLE IF NOT EXISTS public.monitored_clusters (
     id bigint NOT NULL,
     cluster_id text NOT NULL,
     cluster_name text NOT NULL,
@@ -83,7 +83,7 @@ CREATE TABLE public.monitored_clusters (
 -- Name: monitored_clusters_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE public.monitored_clusters_id_seq
+CREATE SEQUENCE IF NOT EXISTS IF NOT EXISTS public.monitored_clusters_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -102,7 +102,7 @@ ALTER SEQUENCE public.monitored_clusters_id_seq OWNED BY public.monitored_cluste
 -- Name: monitored_databases; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.monitored_databases (
+CREATE TABLE IF NOT EXISTS public.monitored_databases (
     id bigint NOT NULL,
     cluster_id text NOT NULL,
     database_name text NOT NULL,
@@ -115,7 +115,7 @@ CREATE TABLE public.monitored_databases (
 -- Name: monitored_databases_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE public.monitored_databases_id_seq
+CREATE SEQUENCE IF NOT EXISTS IF NOT EXISTS public.monitored_databases_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -134,7 +134,7 @@ ALTER SEQUENCE public.monitored_databases_id_seq OWNED BY public.monitored_datab
 -- Name: query_deltas; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.query_deltas (
+CREATE TABLE IF NOT EXISTS public.query_deltas (
     id bigint NOT NULL,
     captured_at timestamp with time zone NOT NULL,
     database_name text NOT NULL,
@@ -175,7 +175,7 @@ ALTER TABLE public.query_deltas ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY
 -- Name: query_snapshots; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.query_snapshots (
+CREATE TABLE IF NOT EXISTS public.query_snapshots (
     id bigint NOT NULL,
     captured_at timestamp with time zone DEFAULT now() NOT NULL,
     database_name text NOT NULL,
@@ -285,49 +285,49 @@ ALTER TABLE ONLY public.query_snapshots
 -- Name: idx_deltas_cluster_time; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_deltas_cluster_time ON public.query_deltas USING btree (cluster_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deltas_cluster_time ON public.query_deltas USING btree (cluster_id, captured_at DESC);
 
 
 --
 -- Name: idx_findings_cluster_time; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_findings_cluster_time ON public.findings USING btree (cluster_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_cluster_time ON public.findings USING btree (cluster_id, captured_at DESC);
 
 
 --
 -- Name: idx_findings_query; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_findings_query ON public.findings USING btree (queryid, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_query ON public.findings USING btree (queryid, captured_at DESC);
 
 
 --
 -- Name: idx_findings_time; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_findings_time ON public.findings USING btree (captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_time ON public.findings USING btree (captured_at DESC);
 
 
 --
 -- Name: idx_query_deltas_query_time; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_query_deltas_query_time ON public.query_deltas USING btree (queryid, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_query_deltas_query_time ON public.query_deltas USING btree (queryid, captured_at DESC);
 
 
 --
 -- Name: idx_query_snapshots_queryid_time; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_query_snapshots_queryid_time ON public.query_snapshots USING btree (queryid, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_query_snapshots_queryid_time ON public.query_snapshots USING btree (queryid, captured_at DESC);
 
 
 --
 -- Name: idx_snapshots_cluster_time; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_snapshots_cluster_time ON public.query_snapshots USING btree (cluster_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_cluster_time ON public.query_snapshots USING btree (cluster_id, captured_at DESC);
 
 
 --

@@ -10,7 +10,6 @@ from psycopg.rows import dict_row
 from psycopg import sql
 
 from fastapi import FastAPI, Query, HTTPException, Request
-from oracle_router import build_oracle_router
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -18,7 +17,7 @@ from kubernetes import client as k8s_client
 from kubernetes import config as k8s_config
 
 
-VERSION = "1.6.0"
+VERSION = "1.5.1"
 
 DB_HOST = os.getenv("PGSCOPE_DB_HOST", "pg-lab-rw")
 DB_PORT = int(os.getenv("PGSCOPE_DB_PORT", "5432"))
@@ -890,9 +889,6 @@ def get_connection():
         password=DB_PASSWORD,
         row_factory=dict_row,
     )
-
-
-app.include_router(build_oracle_router(get_connection))
 
 
 @app.get("/health")
@@ -2107,149 +2103,6 @@ def health_report(cluster_id: str, database: str, minutes: int = Query(default=1
                     GROUP BY queryid ORDER BY sum(exec_time_delta) DESC LIMIT 10""",(cluster_id,database,minutes))
                 metrics["top_queries"]=cur.fetchall()
 
-                # Historical workload comparison:
-                # selected period versus the immediately preceding period.
-                cur.execute("""
-                    WITH periods AS (
-                        SELECT
-                            queryid,
-                            max(query_text) AS query_text,
-
-                            sum(calls_delta) FILTER (
-                                WHERE captured_at >= now() - (%s * interval '1 minute')
-                            ) AS current_calls,
-
-                            sum(exec_time_delta) FILTER (
-                                WHERE captured_at >= now() - (%s * interval '1 minute')
-                            ) AS current_exec_ms,
-
-                            sum(calls_delta) FILTER (
-                                WHERE captured_at < now() - (%s * interval '1 minute')
-                                  AND captured_at >= now() - (%s * 2 * interval '1 minute')
-                            ) AS previous_calls,
-
-                            sum(exec_time_delta) FILTER (
-                                WHERE captured_at < now() - (%s * interval '1 minute')
-                                  AND captured_at >= now() - (%s * 2 * interval '1 minute')
-                            ) AS previous_exec_ms
-
-                        FROM query_deltas
-                        WHERE cluster_id=%s
-                          AND database_name=%s
-                          AND captured_at >= now() - (%s * 2 * interval '1 minute')
-                        GROUP BY queryid
-                    )
-                    SELECT
-                        queryid::text AS queryid,
-                        query_text,
-
-                        coalesce(current_calls,0) AS current_calls,
-                        round(coalesce(current_exec_ms,0)::numeric,2)
-                            AS current_exec_ms,
-
-                        round((
-                            coalesce(current_exec_ms,0)
-                            / nullif(current_calls,0)
-                        )::numeric,3) AS current_avg_ms,
-
-                        coalesce(previous_calls,0) AS previous_calls,
-                        round(coalesce(previous_exec_ms,0)::numeric,2)
-                            AS previous_exec_ms,
-
-                        round((
-                            coalesce(previous_exec_ms,0)
-                            / nullif(previous_calls,0)
-                        )::numeric,3) AS previous_avg_ms,
-
-                        CASE
-                            WHEN previous_calls > 0
-                             AND current_calls > 0
-                             AND previous_exec_ms > 0
-                            THEN round(
-                                100 * (
-                                    (
-                                        current_exec_ms
-                                        / nullif(current_calls,0)
-                                    )
-                                    /
-                                    (
-                                        previous_exec_ms
-                                        / nullif(previous_calls,0)
-                                    )
-                                    - 1
-                                )::numeric,
-                                1
-                            )
-                            ELSE NULL
-                        END AS latency_change_pct
-
-                    FROM periods
-                    WHERE coalesce(current_calls,0) > 0
-                       OR coalesce(previous_calls,0) > 0
-                    ORDER BY coalesce(current_exec_ms,0) DESC
-                    LIMIT 50
-                """, (
-                    minutes,
-                    minutes,
-                    minutes,
-                    minutes,
-                    minutes,
-                    minutes,
-                    cluster_id,
-                    database,
-                    minutes,
-                ))
-
-                comparison = cur.fetchall()
-                metrics["query_comparison"] = comparison
-
-                metrics["regressions"] = [
-                    q for q in comparison
-                    if q["latency_change_pct"] is not None
-                    and q["current_calls"] >= 5
-                    and q["previous_calls"] >= 5
-                    and float(q["latency_change_pct"]) >= 25
-                ][:10]
-
-                metrics["improvements"] = [
-                    q for q in comparison
-                    if q["latency_change_pct"] is not None
-                    and q["current_calls"] >= 5
-                    and q["previous_calls"] >= 5
-                    and float(q["latency_change_pct"]) <= -25
-                ][:10]
-
-                current_calls = sum(
-                    int(q["current_calls"] or 0)
-                    for q in comparison
-                )
-                previous_calls = sum(
-                    int(q["previous_calls"] or 0)
-                    for q in comparison
-                )
-
-                current_exec = sum(
-                    float(q["current_exec_ms"] or 0)
-                    for q in comparison
-                )
-                previous_exec = sum(
-                    float(q["previous_exec_ms"] or 0)
-                    for q in comparison
-                )
-
-                metrics["workload_comparison"] = {
-                    "current_calls": current_calls,
-                    "previous_calls": previous_calls,
-                    "current_exec_ms": round(current_exec, 2),
-                    "previous_exec_ms": round(previous_exec, 2),
-                    "current_avg_ms": round(
-                        current_exec / current_calls, 3
-                    ) if current_calls else None,
-                    "previous_avg_ms": round(
-                        previous_exec / previous_calls, 3
-                    ) if previous_calls else None,
-                }
-
         fs="CRITICAL" if (pf["critical"] or 0)>0 else "WARNING" if (pf["warning"] or 0)>0 else "OK"
         checks.append(_health_check("PgScope findings",fs,f'{pf["critical"] or 0} critical / {pf["warning"] or 0} warning',
             "Findings in the selected report period.","Prioritize critical findings." if fs!="OK" else None))
@@ -2889,11 +2742,6 @@ Close
 <div id="cluster-overview" class="overview-grid"></div>
 
 <div class="toolbar">
-<label>Engine</label>
-<select id="engine-select">
-<option value="postgresql">PostgreSQL</option>
-<option value="oracle">Oracle</option>
-</select>
 <label>Cluster</label>
 <select id="cluster-select"></select>
 
@@ -2916,7 +2764,7 @@ Close
 <div id="refresh-status" class="status">Ready</div>
 </div>
 
-<div class="cards" id="pg-summary-cards">
+<div class="cards">
 <div class="card">
 <div class="card-title">Findings last hour</div>
 <div id="findings-count" class="card-value">-</div>
@@ -2938,7 +2786,7 @@ Close
 </div>
 </div>
 
-<div class="panel" id="pg-findings-panel">
+<div class="panel">
 <h2>Latest Findings</h2>
 
 <table>
@@ -2956,7 +2804,7 @@ Close
 </table>
 </div>
 
-<div class="panel" id="pg-top-queries-panel">
+<div class="panel">
 <h2>Top Queries</h2>
 
 <table>
@@ -2976,83 +2824,6 @@ Close
 </thead>
 <tbody id="queries-table"></tbody>
 </table>
-</div>
-
-
-<div id="oracle-dashboard" style="display:none">
-
-<div class="panel">
-<h2>Oracle Top SQL</h2>
-<table>
-<thead>
-<tr>
-<th>SQL ID</th>
-<th>Executions</th>
-<th>Elapsed ms</th>
-<th>CPU ms</th>
-<th>Avg ms</th>
-<th>Buffer Gets</th>
-<th>Disk Reads</th>
-<th>Rows</th>
-<th>SQL</th>
-</tr>
-</thead>
-<tbody id="oracle-top-sql-table"></tbody>
-</table>
-</div>
-
-<div class="panel">
-<h2>Oracle Sessions</h2>
-<table>
-<thead>
-<tr>
-<th>SID</th>
-<th>Serial#</th>
-<th>User</th>
-<th>Status</th>
-<th>SQL ID</th>
-<th>Event</th>
-<th>Wait Class</th>
-<th>Machine</th>
-<th>Program</th>
-</tr>
-</thead>
-<tbody id="oracle-sessions-table"></tbody>
-</table>
-</div>
-
-<div class="panel">
-<h2>Blocking Sessions</h2>
-<table>
-<thead>
-<tr>
-<th>SID</th>
-<th>User</th>
-<th>SQL ID</th>
-<th>Event</th>
-<th>Wait Class</th>
-<th>Seconds Waiting</th>
-<th>Blocking SID</th>
-</tr>
-</thead>
-<tbody id="oracle-blocking-table"></tbody>
-</table>
-</div>
-
-<div class="panel">
-<h2>Wait Events</h2>
-<table>
-<thead>
-<tr>
-<th>Wait Class</th>
-<th>Total Waits</th>
-<th>Time Waited ms</th>
-</tr>
-</thead>
-<tbody id="oracle-waits-table"></tbody>
-</table>
-</div>
-
 </div>
 
 <div class="panel" id="history-panel">
@@ -3114,10 +2885,6 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text || '';
     return div.innerHTML;
-}
-
-function currentEngine() {
-    return document.getElementById("engine-select").value;
 }
 
 function currentCluster() {
@@ -3213,13 +2980,7 @@ ${cluster.performance_status}
 }
 
 async function loadClusters() {
-    const engine = currentEngine();
-
-    const response = await fetch(
-        engine === 'oracle'
-            ? '/api/oracle/databases'
-            : '/api/clusters'
-    );
+    const response = await fetch('/api/clusters');
 
     if (!response.ok) {
         throw new Error(
@@ -3233,16 +2994,9 @@ async function loadClusters() {
 
     select.innerHTML = '';
 
-    const seen = new Set();
-
     rows.forEach(row => {
-        if (seen.has(row.cluster_id)) {
-            return;
-        }
-
-        seen.add(row.cluster_id);
-
         const option = document.createElement('option');
+
         option.value = row.cluster_id;
         option.textContent = row.cluster_name || row.cluster_id;
 
@@ -3255,13 +3009,10 @@ async function loadClusters() {
 }
 
 async function loadDatabases() {
-    const engine = currentEngine();
     const cluster = currentCluster();
 
     const response = await fetch(
-        engine === 'oracle'
-            ? '/api/oracle/databases'
-            : '/api/databases?cluster_id=' + encodeURIComponent(cluster)
+        '/api/databases?cluster_id=' + encodeURIComponent(cluster)
     );
 
     if (!response.ok) {
@@ -3271,18 +3022,14 @@ async function loadDatabases() {
     }
 
     const rows = await response.json();
-
-    const databaseRows = engine === 'oracle'
-        ? rows.filter(row => row.cluster_id === cluster)
-        : rows;
-
     const select = document.getElementById('database-select');
     const previous = select.value;
 
     select.innerHTML = '';
 
-    databaseRows.forEach(row => {
+    rows.forEach(row => {
         const option = document.createElement('option');
+
         option.value = row.database_name;
         option.textContent = row.database_name;
 
@@ -3291,7 +3038,6 @@ async function loadDatabases() {
             ||
             (
                 !previous
-                && engine === 'postgresql'
                 && row.database_name === 'bench'
             )
         ) {
@@ -3382,7 +3128,7 @@ async function loadQueries() {
     const minutes = currentMinutes();
 
     const response = await fetch(
-        (cluster.startsWith('oracle-') ? '/api/oracle/top-sql' : '/api/top-queries')
+        '/api/top-queries'
         + '?cluster_id=' + encodeURIComponent(cluster)
         + '&database=' + encodeURIComponent(database)
         + '&minutes=' + minutes
@@ -3396,16 +3142,6 @@ async function loadQueries() {
     }
 
     const queries = await response.json();
-    if (cluster.startsWith("oracle-")) {
-        queries.forEach(q => {
-            q.queryid = q.sql_id;
-            q.calls = q.executions;
-            q.total_exec_ms = q.elapsed_ms;
-            q.shared_reads = q.disk_reads;
-            q.avg_cache_hit_pct = "-";
-            q.wal_mb = "-";
-        });
-    }
     const table = document.getElementById('queries-table');
 
     table.innerHTML = '';
@@ -3613,165 +3349,7 @@ function drawChart(canvasId, rows, field) {
     );
 }
 
-
-async function loadOracleDashboard() {
-    const cluster = currentCluster();
-    const database = currentDatabase();
-    const minutes = currentMinutes();
-
-    const [topSqlRes, sessionsRes, blockingRes, waitsRes] = await Promise.all([
-        fetch(
-            '/api/oracle/top-sql'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-            + '&minutes=' + minutes
-            + '&limit=20'
-        ),
-        fetch(
-            '/api/oracle/sessions'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-        ),
-        fetch(
-            '/api/oracle/blocking'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-        ),
-        fetch(
-            '/api/oracle/waits'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-        )
-    ]);
-
-    if (!topSqlRes.ok) {
-        throw new Error('Oracle Top SQL API failed: ' + topSqlRes.status);
-    }
-    if (!sessionsRes.ok) {
-        throw new Error('Oracle Sessions API failed: ' + sessionsRes.status);
-    }
-    if (!blockingRes.ok) {
-        throw new Error('Oracle Blocking API failed: ' + blockingRes.status);
-    }
-    if (!waitsRes.ok) {
-        throw new Error('Oracle Waits API failed: ' + waitsRes.status);
-    }
-
-    const topSql = await topSqlRes.json();
-    const sessions = await sessionsRes.json();
-    const blocking = await blockingRes.json();
-    const waits = await waitsRes.json();
-
-    const topSqlTable = document.getElementById('oracle-top-sql-table');
-    topSqlTable.innerHTML = '';
-
-    topSql.forEach(q => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${escapeHtml(q.sql_id)}</td>
-<td>${q.executions}</td>
-<td>${q.elapsed_ms}</td>
-<td>${q.cpu_ms}</td>
-<td>${q.avg_exec_ms}</td>
-<td>${q.buffer_gets}</td>
-<td>${q.disk_reads}</td>
-<td>${q.rows}</td>
-<td class="query">${escapeHtml(q.query_text)}</td>
-`;
-        topSqlTable.appendChild(row);
-    });
-
-    const sessionsTable = document.getElementById('oracle-sessions-table');
-    sessionsTable.innerHTML = '';
-
-    sessions.forEach(s => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${s.sid ?? '-'}</td>
-<td>${s.serial_number ?? '-'}</td>
-<td>${escapeHtml(s.username || '')}</td>
-<td>${escapeHtml(s.status || '')}</td>
-<td>${escapeHtml(s.sql_id || '')}</td>
-<td>${escapeHtml(s.event || '')}</td>
-<td>${escapeHtml(s.wait_class || '')}</td>
-<td>${escapeHtml(s.machine || '')}</td>
-<td>${escapeHtml(s.program || '')}</td>
-`;
-        sessionsTable.appendChild(row);
-    });
-
-    const blockingTable = document.getElementById('oracle-blocking-table');
-    blockingTable.innerHTML = '';
-
-    blocking.forEach(s => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${s.sid ?? '-'}</td>
-<td>${escapeHtml(s.username || '')}</td>
-<td>${escapeHtml(s.sql_id || '')}</td>
-<td>${escapeHtml(s.event || '')}</td>
-<td>${escapeHtml(s.wait_class || '')}</td>
-<td>${s.seconds_in_wait ?? '-'}</td>
-<td>${s.blocking_session ?? '-'}</td>
-`;
-        blockingTable.appendChild(row);
-    });
-
-    const waitsTable = document.getElementById('oracle-waits-table');
-    waitsTable.innerHTML = '';
-
-    waits.forEach(w => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-<td>${escapeHtml(w.wait_class || '')}</td>
-<td>${w.total_waits ?? '-'}</td>
-<td>${w.time_waited_ms ?? '-'}</td>
-`;
-        waitsTable.appendChild(row);
-    });
-}
-
-function updateEnginePanels() {
-    const oracle = currentEngine() === 'oracle';
-
-    document.getElementById('pg-summary-cards').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('pg-findings-panel').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('pg-top-queries-panel').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('history-panel').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('oracle-dashboard').style.display =
-        oracle ? 'block' : 'none';
-
-    document.getElementById('generate-report-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('add-database-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('disable-database-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('disable-cluster-button').style.display =
-        oracle ? 'none' : '';
-}
-
 async function refreshDetail() {
-    const engine = currentEngine();
-
-    updateEnginePanels();
-
-    if (engine === 'oracle') {
-        await loadOracleDashboard();
-        return;
-    }
-
     await loadSummary();
     await loadFindings();
     await loadQueries();
@@ -3796,13 +3374,6 @@ async function refreshAll() {
         status.innerText = error.message;
     }
 }
-
-async function engineChanged() {
-    await loadClusters();
-    await loadDatabases();
-    await refreshDetail();
-}
-
 
 async function clusterChanged() {
     await loadDatabases();
@@ -4481,13 +4052,6 @@ async function start() {
     await loadDatabases();
     await refreshAll();
 }
-
-document.getElementById(
-    'engine-select'
-).addEventListener(
-    'change',
-    engineChanged
-);
 
 document.getElementById(
     'refresh-button'
