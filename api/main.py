@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Alexander Schou. All rights reserved.
+# Proprietary software. Unauthorized copying, modification, or distribution is prohibited.
+
 import os
 import re
 import base64
@@ -8,6 +11,7 @@ import secrets
 import psycopg
 from psycopg.rows import dict_row
 from psycopg import sql
+from plan_regression import record_plan_observation
 
 from fastapi import FastAPI, Query, HTTPException, Request
 from oracle_router import build_oracle_router
@@ -402,6 +406,110 @@ button {{
     padding: 9px;
     margin-bottom: 14px;
 }}
+
+.oracle-sql-link {{
+    color: #60a5fa;
+    cursor: pointer;
+    font-family: Menlo, Monaco, monospace;
+    font-weight: 700;
+}}
+
+.oracle-sql-link:hover {{
+    text-decoration: underline;
+}}
+
+.oracle-detail-grid {{
+    display: grid;
+    grid-template-columns: repeat(
+        auto-fit,
+        minmax(150px, 1fr)
+    );
+    gap: 12px;
+    margin: 16px 0;
+}}
+
+.oracle-detail-card {{
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 12px;
+}}
+
+.oracle-detail-card .label {{
+    color: #94a3b8;
+    font-size: 12px;
+    margin-bottom: 5px;
+}}
+
+.oracle-detail-card .value {{
+    font-size: 18px;
+    font-weight: 700;
+}}
+
+.oracle-sql-text {{
+    font-family: Menlo, Monaco, monospace;
+    white-space: pre-wrap;
+    background: #0f172a;
+    border-radius: 8px;
+    padding: 14px;
+    margin: 12px 0 20px;
+}}
+
+.oracle-detail-section {{
+    margin-top: 24px;
+}}
+
+.oracle-plan-form {{
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(170px, 1fr)
+        );
+    gap: 10px;
+    margin: 12px 0;
+}}
+
+.oracle-plan-form input {{
+    width: 100%;
+    box-sizing: border-box;
+    background: #0f172a;
+    color: #e5e7eb;
+    border: 1px solid #475569;
+    border-radius: 6px;
+    padding: 8px;
+}}
+
+.oracle-plan-table td {{
+    vertical-align: top;
+}}
+
+.oracle-plan-operation {{
+    font-family: Menlo, Monaco, monospace;
+    white-space: nowrap;
+}}
+
+.oracle-plan-predicate {{
+    font-family: Menlo, Monaco, monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+}}
+
+.oracle-status {{
+    color: #94a3b8;
+    margin: 8px 0;
+}}
+
+.oracle-error {{
+    color: #f87171;
+    font-weight: 700;
+}}
+
+.oracle-close {{
+    float: right;
+}}
+
+
 </style>
 </head>
 <body>
@@ -1185,7 +1293,7 @@ def top_queries(
     minutes: int = Query(
         default=60,
         ge=1,
-        le=1440,
+        le=10080,
     ),
     limit: int = Query(
         default=20,
@@ -1279,7 +1387,7 @@ def query_history(
     minutes: int = Query(
         default=60,
         ge=1,
-        le=1440,
+        le=10080,
     ),
 ):
     sql = """
@@ -1337,7 +1445,7 @@ def query_details(
     queryid: int,
     cluster_id: str,
     database: str,
-    minutes: int = Query(default=60, ge=1, le=1440),
+    minutes: int = Query(default=60, ge=1, le=10080),
 ):
     metrics_sql = """
     SELECT
@@ -1990,17 +2098,34 @@ def explain_query(
         else:
             plan = raw_plan
 
+        summary = plan_summary(
+            plan
+        )
+
+        plan_observation = record_plan_observation(
+            get_connection,
+            request.cluster_id,
+            request.database,
+            queryid,
+            plan,
+            summary,
+        )
+
         return {
             "ok": True,
             "queryid": request.queryid,
+            "query_fingerprint":
+                plan_observation[
+                    "query_fingerprint"
+                ],
             "cluster_id": request.cluster_id,
             "database": request.database,
             "query_text": query_text,
             "parameter_count": parameter_count,
             "plan": plan,
-            "summary": plan_summary(
-                plan
-            ),
+            "summary": summary,
+            "plan_history":
+                plan_observation,
             "analyze": False,
         }
 
@@ -2015,6 +2140,100 @@ def explain_query(
                 f"{exc}"
             ),
         )
+
+
+
+
+@app.get("/api/plan-history")
+def query_plan_history(
+    cluster_id: str,
+    database: str,
+    queryid: str,
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=200,
+    ),
+):
+    try:
+        parsed_queryid = int(
+            queryid
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid queryid.",
+        )
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        captured_at,
+                        queryid::text
+                            AS queryid,
+                        plan_hash,
+                        plan_structure,
+                        root_node,
+                        total_cost,
+                        plan_rows,
+                        calls_delta,
+                        avg_exec_ms,
+                        shared_reads_delta,
+                        temp_written_delta,
+                        wal_bytes_delta
+                    FROM query_plan_history
+                    WHERE cluster_id = %s
+                      AND database_name = %s
+                      AND queryid = %s
+                    ORDER BY
+                        captured_at DESC,
+                        id DESC
+                    LIMIT %s
+                    """,
+                    (
+                        cluster_id,
+                        database,
+                        parsed_queryid,
+                        limit,
+                    ),
+                )
+
+                rows = cur.fetchall()
+
+        return {
+            "ok": True,
+            "cluster_id":
+                cluster_id,
+
+            "database":
+                database,
+
+            "queryid":
+                str(parsed_queryid),
+
+            "query_fingerprint":
+                str(parsed_queryid),
+
+            "plans":
+                rows,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unable to load plan history: "
+                f"{exc}"
+            ),
+        )
+
 
 
 
@@ -2906,6 +3125,8 @@ Close
 <option value="60" selected>1 hour</option>
 <option value="360">6 hours</option>
 <option value="1440">24 hours</option>
+<option value="4320">3 days</option>
+<option value="10080">7 days</option>
 </select>
 
 <button id="refresh-button">Refresh</button>
@@ -2983,10 +3204,12 @@ Close
 
 <div class="panel">
 <h2>Oracle Top SQL</h2>
+
 <table>
 <thead>
 <tr>
 <th>SQL ID</th>
+<th>Plan Hash</th>
 <th>Executions</th>
 <th>Elapsed ms</th>
 <th>CPU ms</th>
@@ -2997,15 +3220,210 @@ Close
 <th>SQL</th>
 </tr>
 </thead>
+
 <tbody id="oracle-top-sql-table"></tbody>
 </table>
 </div>
 
-<div class="panel">
-<h2>Oracle Sessions</h2>
+
+<div
+    class="panel"
+    id="oracle-sql-detail-panel"
+    style="display:none"
+>
+
+<button
+    class="oracle-close"
+    onclick="hideOracleSqlDetails()"
+>
+Close
+</button>
+
+<h2>
+Oracle SQL Details —
+<span id="oracle-detail-sql-id"></span>
+</h2>
+
+<div
+    id="oracle-detail-status"
+    class="oracle-status"
+></div>
+
+<div
+    id="oracle-detail-content"
+    style="display:none"
+>
+
+<div
+    id="oracle-detail-metrics"
+    class="oracle-detail-grid"
+></div>
+
+<h3>SQL</h3>
+
+<div
+    id="oracle-detail-sql"
+    class="oracle-sql-text"
+></div>
+
+
+<div class="oracle-detail-section">
+
+<h3>History</h3>
+
 <table>
 <thead>
 <tr>
+<th>Time</th>
+<th>Plan Hash</th>
+<th>Executions</th>
+<th>Elapsed ms</th>
+<th>CPU ms</th>
+<th>Avg ms</th>
+<th>Buffer Gets</th>
+<th>Disk Reads</th>
+<th>Rows</th>
+</tr>
+</thead>
+
+<tbody id="oracle-history-table"></tbody>
+</table>
+
+</div>
+
+
+<div class="oracle-detail-section">
+
+<h3>Sessions currently using this SQL</h3>
+
+<table>
+<thead>
+<tr>
+<th>Inst</th>
+<th>SID</th>
+<th>Serial#</th>
+<th>User</th>
+<th>Status</th>
+<th>Event</th>
+<th>Wait Class</th>
+<th>Seconds Wait</th>
+<th>Machine</th>
+<th>Program</th>
+</tr>
+</thead>
+
+<tbody id="oracle-query-sessions-table"></tbody>
+</table>
+
+</div>
+
+
+<div class="oracle-detail-section">
+
+<h3>Current Execution Plan</h3>
+
+<div class="subtitle">
+Reads the current shared-pool plan from V$SQL_PLAN.
+No AWR/ASH or SQL Monitor is used.
+</div>
+
+<div class="oracle-plan-form">
+
+<input
+    id="oracle-plan-host"
+    placeholder="Oracle host"
+>
+
+<input
+    id="oracle-plan-port"
+    type="number"
+    value="1521"
+    placeholder="Port"
+>
+
+<input
+    id="oracle-plan-service"
+    placeholder="Service name"
+>
+
+<input
+    id="oracle-plan-user"
+    placeholder="Monitor user"
+>
+
+<input
+    id="oracle-plan-password"
+    type="password"
+    placeholder="Password"
+>
+
+<input
+    id="oracle-plan-child"
+    type="number"
+    placeholder="Child # optional"
+>
+
+</div>
+
+<button
+    onclick="loadOracleCurrentPlan()"
+    class="primary-button"
+>
+Load Current Plan
+</button>
+
+<div
+    id="oracle-plan-status"
+    class="oracle-status"
+></div>
+
+<div
+    id="oracle-plan-result"
+    style="display:none"
+>
+
+<div
+    id="oracle-plan-summary"
+    class="oracle-detail-grid"
+></div>
+
+<table class="oracle-plan-table">
+
+<thead>
+<tr>
+<th>Child</th>
+<th>ID</th>
+<th>Operation</th>
+<th>Object</th>
+<th>Rows</th>
+<th>Cost</th>
+<th>Access Predicates</th>
+<th>Filter Predicates</th>
+</tr>
+</thead>
+
+<tbody id="oracle-plan-table"></tbody>
+
+</table>
+
+</div>
+
+</div>
+
+</div>
+
+</div>
+
+
+<div class="panel">
+
+<h2>Oracle Sessions</h2>
+
+<table>
+
+<thead>
+<tr>
+<th>Inst</th>
 <th>SID</th>
 <th>Serial#</th>
 <th>User</th>
@@ -3017,31 +3435,50 @@ Close
 <th>Program</th>
 </tr>
 </thead>
+
 <tbody id="oracle-sessions-table"></tbody>
+
 </table>
+
 </div>
 
+
 <div class="panel">
+
 <h2>Blocking Sessions</h2>
+
 <table>
+
 <thead>
 <tr>
-<th>SID</th>
+<th>Blocked Inst</th>
+<th>Blocked SID</th>
 <th>User</th>
 <th>SQL ID</th>
 <th>Event</th>
 <th>Wait Class</th>
-<th>Seconds Waiting</th>
-<th>Blocking SID</th>
+<th>Seconds</th>
+<th>Blocker Inst</th>
+<th>Blocker SID</th>
+<th>Blocker User</th>
+<th>Blocker SQL</th>
+<th>Blocker Program</th>
 </tr>
 </thead>
+
 <tbody id="oracle-blocking-table"></tbody>
+
 </table>
+
 </div>
 
+
 <div class="panel">
+
 <h2>Wait Events</h2>
+
 <table>
+
 <thead>
 <tr>
 <th>Wait Class</th>
@@ -3049,11 +3486,15 @@ Close
 <th>Time Waited ms</th>
 </tr>
 </thead>
+
 <tbody id="oracle-waits-table"></tbody>
+
 </table>
+
 </div>
 
 </div>
+
 
 <div class="panel" id="history-panel">
 <h2>Query History</h2>
@@ -3614,122 +4055,965 @@ function drawChart(canvasId, rows, field) {
 }
 
 
+let currentOracleSqlId = null;
+
+
+function oracleDetailCard(
+    label,
+    value
+) {
+    const shown =
+        value === null
+        || value === undefined
+        || value === ''
+            ? '-'
+            : value;
+
+    return `
+<div class="oracle-detail-card">
+<div class="label">${escapeHtml(label)}</div>
+<div class="value">${escapeHtml(String(shown))}</div>
+</div>
+`;
+}
+
+
+function formatOracleNumber(
+    value,
+    decimals = 0
+) {
+    if (
+        value === null
+        || value === undefined
+    ) {
+        return '-';
+    }
+
+    const number = Number(value);
+
+    if (!Number.isFinite(number)) {
+        return value;
+    }
+
+    return number.toLocaleString(
+        'en-US',
+        {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals
+        }
+    );
+}
+
+
+function hideOracleSqlDetails() {
+    document.getElementById(
+        'oracle-sql-detail-panel'
+    ).style.display = 'none';
+
+    currentOracleSqlId = null;
+}
+
+
+async function showOracleSqlDetails(
+    sqlId
+) {
+    currentOracleSqlId = sqlId;
+
+    const cluster = currentCluster();
+    const database = currentDatabase();
+    const minutes = currentMinutes();
+
+    const panel =
+        document.getElementById(
+            'oracle-sql-detail-panel'
+        );
+
+    const status =
+        document.getElementById(
+            'oracle-detail-status'
+        );
+
+    const content =
+        document.getElementById(
+            'oracle-detail-content'
+        );
+
+    panel.style.display = 'block';
+
+    content.style.display = 'none';
+
+    status.className =
+        'oracle-status';
+
+    status.innerText =
+        'Loading Oracle SQL details...';
+
+    document.getElementById(
+        'oracle-detail-sql-id'
+    ).innerText = sqlId;
+
+    document.getElementById(
+        'oracle-plan-result'
+    ).style.display = 'none';
+
+    document.getElementById(
+        'oracle-plan-status'
+    ).innerText = '';
+
+    try {
+        const base =
+            '?cluster_id='
+            + encodeURIComponent(cluster)
+            + '&database='
+            + encodeURIComponent(database);
+
+        const [
+            summaryRes,
+            historyRes,
+            sessionsRes
+        ] = await Promise.all([
+            fetch(
+                '/api/oracle/query-summary/'
+                + encodeURIComponent(sqlId)
+                + base
+                + '&minutes='
+                + minutes
+            ),
+
+            fetch(
+                '/api/oracle/query-history/'
+                + encodeURIComponent(sqlId)
+                + base
+                + '&minutes='
+                + minutes
+            ),
+
+            fetch(
+                '/api/oracle/query-sessions/'
+                + encodeURIComponent(sqlId)
+                + base
+            )
+        ]);
+
+        if (!summaryRes.ok) {
+            throw new Error(
+                'Summary API returned '
+                + summaryRes.status
+            );
+        }
+
+        if (!historyRes.ok) {
+            throw new Error(
+                'History API returned '
+                + historyRes.status
+            );
+        }
+
+        if (!sessionsRes.ok) {
+            throw new Error(
+                'Sessions API returned '
+                + sessionsRes.status
+            );
+        }
+
+        const summary =
+            await summaryRes.json();
+
+        const history =
+            await historyRes.json();
+
+        const sessions =
+            await sessionsRes.json();
+
+        const metrics =
+            document.getElementById(
+                'oracle-detail-metrics'
+            );
+
+        metrics.innerHTML =
+            oracleDetailCard(
+                'Plan Hash',
+                summary.plan_hash_value
+            )
+            + oracleDetailCard(
+                'Parsing Schema',
+                summary.parsing_schema
+            )
+            + oracleDetailCard(
+                'Instance',
+                summary.instance_number
+            )
+            + oracleDetailCard(
+                'Executions',
+                formatOracleNumber(
+                    summary.executions
+                )
+            )
+            + oracleDetailCard(
+                'Elapsed',
+                formatOracleNumber(
+                    summary.elapsed_ms,
+                    2
+                ) + ' ms'
+            )
+            + oracleDetailCard(
+                'CPU',
+                formatOracleNumber(
+                    summary.cpu_ms,
+                    2
+                ) + ' ms'
+            )
+            + oracleDetailCard(
+                'Avg',
+                formatOracleNumber(
+                    summary.avg_exec_ms,
+                    2
+                ) + ' ms'
+            )
+            + oracleDetailCard(
+                'Buffer Gets',
+                formatOracleNumber(
+                    summary.buffer_gets
+                )
+            )
+            + oracleDetailCard(
+                'Disk Reads',
+                formatOracleNumber(
+                    summary.disk_reads
+                )
+            )
+            + oracleDetailCard(
+                'Rows',
+                formatOracleNumber(
+                    summary.rows_processed
+                )
+            )
+            + oracleDetailCard(
+                'Last Active',
+                summary.last_active_time
+                    ? new Date(
+                        summary.last_active_time
+                    ).toLocaleString()
+                    : '-'
+            );
+
+        document.getElementById(
+            'oracle-detail-sql'
+        ).innerText =
+            summary.query_text || '';
+
+        const historyTable =
+            document.getElementById(
+                'oracle-history-table'
+            );
+
+        historyTable.innerHTML = '';
+
+        history
+            .slice()
+            .reverse()
+            .forEach(row => {
+                const tr =
+                    document.createElement(
+                        'tr'
+                    );
+
+                tr.innerHTML = `
+<td>${
+    new Date(
+        row.captured_at
+    ).toLocaleTimeString()
+}</td>
+
+<td>${row.plan_hash_value ?? '-'}</td>
+
+<td>${
+    formatOracleNumber(
+        row.executions_delta
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        row.elapsed_ms_delta,
+        2
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        row.cpu_ms_delta,
+        2
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        row.avg_exec_ms,
+        2
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        row.buffer_gets_delta
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        row.disk_reads_delta
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        row.rows_delta
+    )
+}</td>
+`;
+
+                historyTable.appendChild(
+                    tr
+                );
+            });
+
+        const sessionsTable =
+            document.getElementById(
+                'oracle-query-sessions-table'
+            );
+
+        sessionsTable.innerHTML = '';
+
+        if (!sessions.length) {
+            const tr =
+                document.createElement(
+                    'tr'
+                );
+
+            tr.innerHTML =
+                '<td colspan="10">'
+                + 'No session is currently '
+                + 'using this SQL ID.'
+                + '</td>';
+
+            sessionsTable.appendChild(
+                tr
+            );
+
+        } else {
+            sessions.forEach(s => {
+                const tr =
+                    document.createElement(
+                        'tr'
+                    );
+
+                tr.innerHTML = `
+<td>${s.instance_id ?? '-'}</td>
+<td>${s.sid ?? '-'}</td>
+<td>${s.serial_number ?? '-'}</td>
+<td>${escapeHtml(s.username || '')}</td>
+<td>${escapeHtml(s.status || '')}</td>
+<td>${escapeHtml(s.event || '')}</td>
+<td>${escapeHtml(s.wait_class || '')}</td>
+<td>${s.seconds_in_wait ?? '-'}</td>
+<td>${escapeHtml(s.machine || '')}</td>
+<td>${escapeHtml(s.program || '')}</td>
+`;
+
+                sessionsTable.appendChild(
+                    tr
+                );
+            });
+        }
+
+        status.innerText =
+            'Loaded '
+            + history.length
+            + ' history points.';
+
+        content.style.display =
+            'block';
+
+        panel.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        status.className =
+            'oracle-status oracle-error';
+
+        status.innerText =
+            'Oracle SQL details failed: '
+            + error.message;
+    }
+}
+
+
+async function loadOracleCurrentPlan() {
+    if (!currentOracleSqlId) {
+        return;
+    }
+
+    const status =
+        document.getElementById(
+            'oracle-plan-status'
+        );
+
+    const result =
+        document.getElementById(
+            'oracle-plan-result'
+        );
+
+    status.className =
+        'oracle-status';
+
+    status.innerText =
+        'Loading current plan...';
+
+    result.style.display =
+        'none';
+
+    const childValue =
+        document.getElementById(
+            'oracle-plan-child'
+        ).value.trim();
+
+    const payload = {
+        host:
+            document.getElementById(
+                'oracle-plan-host'
+            ).value.trim(),
+
+        port:
+            Number(
+                document.getElementById(
+                    'oracle-plan-port'
+                ).value
+                || 1521
+            ),
+
+        service_name:
+            document.getElementById(
+                'oracle-plan-service'
+            ).value.trim(),
+
+        username:
+            document.getElementById(
+                'oracle-plan-user'
+            ).value.trim(),
+
+        password:
+            document.getElementById(
+                'oracle-plan-password'
+            ).value,
+
+        sql_id:
+            currentOracleSqlId,
+
+        child_number:
+            childValue
+                ? Number(childValue)
+                : null
+    };
+
+    if (
+        !payload.host
+        || !payload.service_name
+        || !payload.username
+        || !payload.password
+    ) {
+        status.className =
+            'oracle-status oracle-error';
+
+        status.innerText =
+            'Host, service, user and '
+            + 'password are required.';
+
+        return;
+    }
+
+    try {
+        const response =
+            await fetch(
+                '/api/oracle/current-plan',
+                {
+                    method: 'POST',
+
+                    headers: {
+                        'Content-Type':
+                            'application/json'
+                    },
+
+                    body:
+                        JSON.stringify(
+                            payload
+                        )
+                }
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+            throw new Error(
+                data.detail
+                || (
+                    'Plan API returned '
+                    + response.status
+                )
+            );
+        }
+
+        const summary =
+            document.getElementById(
+                'oracle-plan-summary'
+            );
+
+        summary.innerHTML =
+            oracleDetailCard(
+                'SQL ID',
+                data.sql_id
+            )
+            + oracleDetailCard(
+                'Children',
+                (
+                    data.children
+                    || []
+                ).join(', ')
+            )
+            + oracleDetailCard(
+                'Plan Hash',
+                (
+                    data.plan_hash_values
+                    || []
+                ).join(', ')
+            );
+
+        const table =
+            document.getElementById(
+                'oracle-plan-table'
+            );
+
+        table.innerHTML = '';
+
+        data.plan.forEach(p => {
+            const tr =
+                document.createElement(
+                    'tr'
+                );
+
+            const operation =
+                [
+                    p.operation,
+                    p.options
+                ]
+                .filter(Boolean)
+                .join(' ');
+
+            const objectName =
+                [
+                    p.object_owner,
+                    p.object_name
+                ]
+                .filter(Boolean)
+                .join('.');
+
+            tr.innerHTML = `
+<td>${p.child_number ?? '-'}</td>
+
+<td>${p.id ?? '-'}</td>
+
+<td class="oracle-plan-operation">${
+    escapeHtml(
+        operation
+    )
+}</td>
+
+<td>${
+    escapeHtml(
+        objectName
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        p.cardinality
+    )
+}</td>
+
+<td>${
+    formatOracleNumber(
+        p.cost
+    )
+}</td>
+
+<td class="oracle-plan-predicate">${
+    escapeHtml(
+        p.access_predicates
+        || ''
+    )
+}</td>
+
+<td class="oracle-plan-predicate">${
+    escapeHtml(
+        p.filter_predicates
+        || ''
+    )
+}</td>
+`;
+
+            table.appendChild(
+                tr
+            );
+        });
+
+        status.innerText =
+            'Loaded '
+            + data.plan.length
+            + ' plan rows.';
+
+        result.style.display =
+            'block';
+
+    } catch (error) {
+        console.error(error);
+
+        status.className =
+            'oracle-status oracle-error';
+
+        status.innerText =
+            'Current plan failed: '
+            + error.message;
+    }
+}
+
+
 async function loadOracleDashboard() {
     const cluster = currentCluster();
     const database = currentDatabase();
     const minutes = currentMinutes();
 
-    const [topSqlRes, sessionsRes, blockingRes, waitsRes] = await Promise.all([
+    const [
+        topSqlRes,
+        sessionsRes,
+        blockingRes,
+        waitsRes
+    ] = await Promise.all([
+
         fetch(
             '/api/oracle/top-sql'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
-            + '&minutes=' + minutes
+            + '?cluster_id='
+            + encodeURIComponent(cluster)
+            + '&database='
+            + encodeURIComponent(database)
+            + '&minutes='
+            + minutes
             + '&limit=20'
         ),
+
         fetch(
             '/api/oracle/sessions'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
+            + '?cluster_id='
+            + encodeURIComponent(cluster)
+            + '&database='
+            + encodeURIComponent(database)
         ),
+
         fetch(
             '/api/oracle/blocking'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
+            + '?cluster_id='
+            + encodeURIComponent(cluster)
+            + '&database='
+            + encodeURIComponent(database)
         ),
+
         fetch(
             '/api/oracle/waits'
-            + '?cluster_id=' + encodeURIComponent(cluster)
-            + '&database=' + encodeURIComponent(database)
+            + '?cluster_id='
+            + encodeURIComponent(cluster)
+            + '&database='
+            + encodeURIComponent(database)
         )
     ]);
 
     if (!topSqlRes.ok) {
-        throw new Error('Oracle Top SQL API failed: ' + topSqlRes.status);
+        throw new Error(
+            'Oracle Top SQL API failed: '
+            + topSqlRes.status
+        );
     }
+
     if (!sessionsRes.ok) {
-        throw new Error('Oracle Sessions API failed: ' + sessionsRes.status);
+        throw new Error(
+            'Oracle Sessions API failed: '
+            + sessionsRes.status
+        );
     }
+
     if (!blockingRes.ok) {
-        throw new Error('Oracle Blocking API failed: ' + blockingRes.status);
+        throw new Error(
+            'Oracle Blocking API failed: '
+            + blockingRes.status
+        );
     }
+
     if (!waitsRes.ok) {
-        throw new Error('Oracle Waits API failed: ' + waitsRes.status);
+        throw new Error(
+            'Oracle Waits API failed: '
+            + waitsRes.status
+        );
     }
 
-    const topSql = await topSqlRes.json();
-    const sessions = await sessionsRes.json();
-    const blocking = await blockingRes.json();
-    const waits = await waitsRes.json();
+    const topSql =
+        await topSqlRes.json();
 
-    const topSqlTable = document.getElementById('oracle-top-sql-table');
+    const sessions =
+        await sessionsRes.json();
+
+    const blocking =
+        await blockingRes.json();
+
+    const waits =
+        await waitsRes.json();
+
+
+    const topSqlTable =
+        document.getElementById(
+            'oracle-top-sql-table'
+        );
+
     topSqlTable.innerHTML = '';
 
     topSql.forEach(q => {
-        const row = document.createElement('tr');
+        const row =
+            document.createElement(
+                'tr'
+            );
+
         row.innerHTML = `
-<td>${escapeHtml(q.sql_id)}</td>
-<td>${q.executions}</td>
-<td>${q.elapsed_ms}</td>
-<td>${q.cpu_ms}</td>
-<td>${q.avg_exec_ms}</td>
-<td>${q.buffer_gets}</td>
-<td>${q.disk_reads}</td>
-<td>${q.rows}</td>
+<td>
+<span
+    class="oracle-sql-link"
+    data-sql-id="${escapeHtml(q.sql_id)}"
+>
+${escapeHtml(q.sql_id)}
+</span>
+</td>
+
+<td>${q.plan_hash_value ?? '-'}</td>
+<td>${formatOracleNumber(q.executions)}</td>
+<td>${formatOracleNumber(q.elapsed_ms, 2)}</td>
+<td>${formatOracleNumber(q.cpu_ms, 2)}</td>
+<td>${formatOracleNumber(q.avg_exec_ms, 2)}</td>
+<td>${formatOracleNumber(q.buffer_gets)}</td>
+<td>${formatOracleNumber(q.disk_reads)}</td>
+<td>${formatOracleNumber(q.rows)}</td>
 <td class="query">${escapeHtml(q.query_text)}</td>
 `;
-        topSqlTable.appendChild(row);
+
+        topSqlTable.appendChild(
+            row
+        );
     });
 
-    const sessionsTable = document.getElementById('oracle-sessions-table');
+    topSqlTable
+        .querySelectorAll(
+            '.oracle-sql-link'
+        )
+        .forEach(link => {
+            link.addEventListener(
+                'click',
+                () => {
+                    showOracleSqlDetails(
+                        link.dataset.sqlId
+                    );
+                }
+            );
+        });
+
+
+    const sessionsTable =
+        document.getElementById(
+            'oracle-sessions-table'
+        );
+
     sessionsTable.innerHTML = '';
 
     sessions.forEach(s => {
-        const row = document.createElement('tr');
+        const row =
+            document.createElement(
+                'tr'
+            );
+
         row.innerHTML = `
+<td>${s.instance_id ?? '-'}</td>
 <td>${s.sid ?? '-'}</td>
 <td>${s.serial_number ?? '-'}</td>
 <td>${escapeHtml(s.username || '')}</td>
 <td>${escapeHtml(s.status || '')}</td>
-<td>${escapeHtml(s.sql_id || '')}</td>
+
+<td>${
+    s.sql_id
+        ? `
+<span
+    class="oracle-sql-link"
+    data-sql-id="${escapeHtml(s.sql_id)}"
+>
+${escapeHtml(s.sql_id)}
+</span>
+`
+        : ''
+}</td>
+
 <td>${escapeHtml(s.event || '')}</td>
 <td>${escapeHtml(s.wait_class || '')}</td>
 <td>${escapeHtml(s.machine || '')}</td>
 <td>${escapeHtml(s.program || '')}</td>
 `;
-        sessionsTable.appendChild(row);
+
+        sessionsTable.appendChild(
+            row
+        );
     });
 
-    const blockingTable = document.getElementById('oracle-blocking-table');
+    sessionsTable
+        .querySelectorAll(
+            '.oracle-sql-link'
+        )
+        .forEach(link => {
+            link.addEventListener(
+                'click',
+                () => {
+                    showOracleSqlDetails(
+                        link.dataset.sqlId
+                    );
+                }
+            );
+        });
+
+
+    const blockingTable =
+        document.getElementById(
+            'oracle-blocking-table'
+        );
+
     blockingTable.innerHTML = '';
 
-    blocking.forEach(s => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
+    if (!blocking.length) {
+        const row =
+            document.createElement(
+                'tr'
+            );
+
+        row.innerHTML =
+            '<td colspan="12">'
+            + 'No blocking sessions.'
+            + '</td>';
+
+        blockingTable.appendChild(
+            row
+        );
+
+    } else {
+        blocking.forEach(s => {
+            const row =
+                document.createElement(
+                    'tr'
+                );
+
+            row.innerHTML = `
+<td>${s.instance_id ?? '-'}</td>
 <td>${s.sid ?? '-'}</td>
 <td>${escapeHtml(s.username || '')}</td>
-<td>${escapeHtml(s.sql_id || '')}</td>
+
+<td>${
+    s.sql_id
+        ? `
+<span
+    class="oracle-sql-link"
+    data-sql-id="${escapeHtml(s.sql_id)}"
+>
+${escapeHtml(s.sql_id)}
+</span>
+`
+        : ''
+}</td>
+
 <td>${escapeHtml(s.event || '')}</td>
 <td>${escapeHtml(s.wait_class || '')}</td>
 <td>${s.seconds_in_wait ?? '-'}</td>
+<td>${s.blocking_instance ?? '-'}</td>
 <td>${s.blocking_session ?? '-'}</td>
-`;
-        blockingTable.appendChild(row);
-    });
+<td>${escapeHtml(s.blocker_username || '')}</td>
 
-    const waitsTable = document.getElementById('oracle-waits-table');
+<td>${
+    s.blocker_sql_id
+        ? `
+<span
+    class="oracle-sql-link"
+    data-sql-id="${escapeHtml(s.blocker_sql_id)}"
+>
+${escapeHtml(s.blocker_sql_id)}
+</span>
+`
+        : ''
+}</td>
+
+<td>${escapeHtml(s.blocker_program || '')}</td>
+`;
+
+            blockingTable.appendChild(
+                row
+            );
+        });
+    }
+
+    blockingTable
+        .querySelectorAll(
+            '.oracle-sql-link'
+        )
+        .forEach(link => {
+            link.addEventListener(
+                'click',
+                () => {
+                    showOracleSqlDetails(
+                        link.dataset.sqlId
+                    );
+                }
+            );
+        });
+
+
+    const waitsTable =
+        document.getElementById(
+            'oracle-waits-table'
+        );
+
     waitsTable.innerHTML = '';
 
     waits.forEach(w => {
-        const row = document.createElement('tr');
+        const row =
+            document.createElement(
+                'tr'
+            );
+
         row.innerHTML = `
 <td>${escapeHtml(w.wait_class || '')}</td>
-<td>${w.total_waits ?? '-'}</td>
-<td>${w.time_waited_ms ?? '-'}</td>
+<td>${formatOracleNumber(w.total_waits)}</td>
+<td>${formatOracleNumber(w.time_waited_ms, 2)}</td>
 `;
-        waitsTable.appendChild(row);
+
+        waitsTable.appendChild(
+            row
+        );
     });
 }
+
+
 
 function updateEnginePanels() {
     const oracle = currentEngine() === 'oracle';
@@ -4666,6 +5950,10 @@ document.getElementById('close-report-button').addEventListener('click',hideHeal
 document.getElementById('report-modal').addEventListener('click',function(e){if(e.target===this)hideHealthReport();});
 </script>
 
+
+<footer style="margin-top:32px;padding:20px 0;text-align:center;opacity:.6;font-size:12px;">
+PGSCOPE · Copyright © 2026 Alexander Schou. All rights reserved.
+</footer>
 </body>
 </html>
 """
