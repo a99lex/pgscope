@@ -90,6 +90,12 @@ spec:
                 -v migrator_user="$PGSCOPE_MIGRATOR_USER" \
                 -f /migrations/004_api_grants.sql
 
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -v api_user="$PGSCOPE_API_USER" \
+                -v writer_user="$PGSCOPE_WRITER_USER" \
+                -f /migrations/005_plan_regression.sql
+
               echo "PgScope migrations complete."
 
           volumeMounts:

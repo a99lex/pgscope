@@ -15,3 +15,6 @@ data:
 
   004_api_grants.sql: |
 {{ .Files.Get "migrations/004_api_grants.sql" | indent 4 }}
+
+  005_plan_regression.sql: |
+{{ .Files.Get "migrations/005_plan_regression.sql" | indent 4 }}
