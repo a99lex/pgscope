@@ -248,6 +248,8 @@ helm install pgscope ./helm/pgscope \
 
 The PostgreSQL host must be reachable from the Kubernetes namespace where PgScope is running.
 
+The Helm chart never generates database passwords. The API, Collector and migration Secrets must exist before installation; rendering fails when a required Secret name is omitted.
+
 For a PostgreSQL Service in another Kubernetes namespace, use its fully qualified Kubernetes DNS name.
 
 Example:
@@ -307,6 +309,12 @@ pgscope-api          1/1   Running
 pgscope-collector    1/1   Running
 pgscope-migrations   0/1   Completed
 ```
+
+The API exposes separate Kubernetes health endpoints:
+
+- `/health/live` checks that the API process is running without depending on PostgreSQL.
+- `/health/ready` checks that the PgScope storage database is reachable.
+- `/health` remains a backward-compatible alias for readiness.
 
 ### API logs
 

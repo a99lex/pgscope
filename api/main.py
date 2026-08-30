@@ -2,6 +2,7 @@ import os
 import re
 import base64
 import hashlib
+import html
 import urllib.parse
 import secrets
 
@@ -342,8 +343,12 @@ def delete_session(
 def login_html(
     error: str | None = None,
 ):
+    safe_error = html.escape(
+        error or "",
+        quote=True,
+    )
     error_html = (
-        f'<div class="error">{error}</div>'
+        f'<div class="error">{safe_error}</div>'
         if error
         else ""
     )
@@ -425,8 +430,16 @@ def change_password_html(
     username: str,
     error: str | None = None,
 ):
+    safe_username = html.escape(
+        username,
+        quote=True,
+    )
+    safe_error = html.escape(
+        error or "",
+        quote=True,
+    )
     error_html = (
-        f'<div class="error">{error}</div>'
+        f'<div class="error">{safe_error}</div>'
         if error
         else ""
     )
@@ -498,7 +511,7 @@ button {{
 <div class="notice">
 The default administrator password must be changed before PgScope can be used.
 </div>
-<div>User: <strong>{username}</strong></div>
+<div>User: <strong>{safe_username}</strong></div>
 {error_html}
 <form method="post" action="/change-password">
 <label>New password</label>
@@ -527,6 +540,8 @@ async def pgscope_auth_middleware(
 
     if path in (
         "/health",
+        "/health/live",
+        "/health/ready",
         "/login",
     ):
         return await call_next(
@@ -587,6 +602,41 @@ async def pgscope_auth_middleware(
     return await call_next(
         request
     )
+
+
+@app.middleware("http")
+async def pgscope_security_headers(
+    request: Request,
+    call_next,
+):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=()"
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+    forwarded_proto = request.headers.get(
+        "x-forwarded-proto",
+        request.url.scheme,
+    )
+    if forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 @app.get(
@@ -891,18 +941,38 @@ def get_connection():
     )
 
 
-@app.get("/health")
-def health():
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT now() AS database_time")
-            row = cur.fetchone()
+@app.get("/health/live")
+def health_live():
+    return {
+        "status": "ok",
+        "version": VERSION,
+    }
+
+
+@app.get("/health/ready")
+def health_ready():
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT now() AS database_time")
+                row = cur.fetchone()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="PgScope storage database is unavailable.",
+        ) from exc
 
     return {
         "status": "ok",
         "version": VERSION,
         "database_time": row["database_time"],
     }
+
+
+@app.get("/health")
+def health():
+    """Backward-compatible readiness endpoint."""
+    return health_ready()
 
 
 @app.get("/api/cluster-overview")
