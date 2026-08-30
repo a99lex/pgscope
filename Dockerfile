@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 WORKDIR /app
-RUN pip install --no-cache-dir "psycopg[binary]" PyYAML kubernetes
-COPY collector /app/collector
+RUN addgroup --system pgscope \
+    && adduser --system --ingroup pgscope pgscope \
+    && pip install --no-cache-dir "psycopg[binary]" PyYAML kubernetes
+COPY --chown=pgscope:pgscope collector /app/collector
+USER pgscope
 CMD ["python", "-u", "/app/collector/collector.py"]

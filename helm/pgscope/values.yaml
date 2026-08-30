@@ -6,17 +6,22 @@ api:
 
   replicas: 1
 
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
   service:
     type: ClusterIP
     port: 8000
 
   databaseSecret:
-    existingSecret: ""
-    name: pgscope-api-db
+    existingSecret: pgscope-api-db
     usernameKey: username
     passwordKey: password
-    username: pgscope_api
-    password: "PgScopeWriter123!"
 
 collector:
   image:
@@ -26,13 +31,18 @@ collector:
 
   replicas: 1
 
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
   storageSecret:
-    existingSecret: ""
-    name: pgscope-db
+    existingSecret: pgscope-db
     usernameKey: store-user
     passwordKey: store-password
-    username: pgscope_writer
-    password: "PgScopeWriter123!"
 
   intervalSeconds: 30
   queryLimit: 200

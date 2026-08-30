@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS public.monitored_clusters (
 -- Name: monitored_clusters_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE IF NOT EXISTS IF NOT EXISTS public.monitored_clusters_id_seq
+CREATE SEQUENCE IF NOT EXISTS public.monitored_clusters_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS public.monitored_databases (
 -- Name: monitored_databases_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-CREATE SEQUENCE IF NOT EXISTS IF NOT EXISTS public.monitored_databases_id_seq
+CREATE SEQUENCE IF NOT EXISTS public.monitored_databases_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -343,4 +343,3 @@ ALTER TABLE ONLY public.monitored_databases
 --
 
 \unrestrict EsW5mcacS0reK5cKMuIUw3elmIo2QcAeC42N3djCAQXfYYksM1FtTvkJ4Q3basW
-

@@ -43,7 +43,7 @@ spec:
             - name: PGSCOPE_WRITER_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ default .Values.collector.storageSecret.name .Values.collector.storageSecret.existingSecret }}
+                  name: {{ required "collector.storageSecret.existingSecret is required" .Values.collector.storageSecret.existingSecret }}
                   key: {{ .Values.collector.storageSecret.usernameKey }}
 
             - name: PGSCOPE_MIGRATOR_USER
@@ -55,7 +55,7 @@ spec:
             - name: PGSCOPE_API_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ default .Values.api.databaseSecret.name .Values.api.databaseSecret.existingSecret }}
+                  name: {{ required "api.databaseSecret.existingSecret is required" .Values.api.databaseSecret.existingSecret }}
                   key: {{ .Values.api.databaseSecret.usernameKey }}
 
           command:
