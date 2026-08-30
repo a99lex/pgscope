@@ -31,31 +31,31 @@ spec:
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  name: {{ required "migration.databaseSecret.existingSecret is required" .Values.migration.databaseSecret.existingSecret }}
                   key: {{ .Values.migration.databaseSecret.usernameKey }}
 
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  name: {{ required "migration.databaseSecret.existingSecret is required" .Values.migration.databaseSecret.existingSecret }}
                   key: {{ .Values.migration.databaseSecret.passwordKey }}
 
             - name: PGSCOPE_WRITER_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ default .Values.collector.storageSecret.name .Values.collector.storageSecret.existingSecret }}
+                  name: {{ required "collector.storageSecret.existingSecret is required" .Values.collector.storageSecret.existingSecret }}
                   key: {{ .Values.collector.storageSecret.usernameKey }}
 
             - name: PGSCOPE_MIGRATOR_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  name: {{ required "migration.databaseSecret.existingSecret is required" .Values.migration.databaseSecret.existingSecret }}
                   key: {{ .Values.migration.databaseSecret.usernameKey }}
 
             - name: PGSCOPE_API_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ default .Values.api.databaseSecret.name .Values.api.databaseSecret.existingSecret }}
+                  name: {{ required "api.databaseSecret.existingSecret is required" .Values.api.databaseSecret.existingSecret }}
                   key: {{ .Values.api.databaseSecret.usernameKey }}
 
           command:
