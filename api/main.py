@@ -2694,6 +2694,54 @@ h1 {
     border-bottom: 1px solid #334155;
 }
 
+.platform-status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin: 22px 0 28px;
+}
+
+.platform-status-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 17px 19px;
+    cursor: pointer;
+}
+
+.platform-status-card:hover {
+    border-color: #64748b;
+}
+
+.platform-status-head,
+.platform-status-metrics {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.platform-status-title {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.platform-status-metrics {
+    margin-top: 14px;
+    color: #94a3b8;
+    font-size: 13px;
+}
+
+.platform-status-metrics strong {
+    color: #e5e7eb;
+}
+
+@media (max-width: 760px) {
+    .platform-status-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .engine-tab {
     border: 0;
     border-bottom: 3px solid transparent;
@@ -3196,6 +3244,32 @@ Close
 <h3>Top Queries</h3><table><thead><tr><th>Query ID</th><th>Calls</th><th>Total ms</th><th>Avg ms</th><th>WAL MB</th><th>Query</th></tr></thead>
 <tbody id="report-top-queries"></tbody></table></div>
 <div class="form-actions"><button id="print-report-button" class="report-button">Print / Save PDF</button><button id="close-report-button">Close</button></div></div></div>
+
+<div class="platform-status-grid" aria-label="Platform status">
+<div class="platform-status-card" data-engine="postgresql">
+<div class="platform-status-head">
+<div class="platform-status-title">PostgreSQL</div>
+<span id="postgresql-platform-status" class="cluster-status status-UNKNOWN">LOADING</span>
+</div>
+<div class="platform-status-metrics">
+<span>Clusters <strong id="postgresql-platform-clusters">-</strong></span>
+<span>Databases <strong id="postgresql-platform-databases">-</strong></span>
+<span>Last collection <strong id="postgresql-platform-last">-</strong></span>
+</div>
+</div>
+<div class="platform-status-card" data-engine="oracle">
+<div class="platform-status-head">
+<div class="platform-status-title">Oracle</div>
+<span id="oracle-platform-status" class="cluster-status status-UNKNOWN">LOADING</span>
+</div>
+<div class="platform-status-metrics">
+<span>Clusters <strong id="oracle-platform-clusters">-</strong></span>
+<span>Databases <strong id="oracle-platform-databases">-</strong></span>
+<span>Last collection <strong id="oracle-platform-last">-</strong></span>
+</div>
+</div>
+</div>
+
 <div id="pg-cluster-overview-section">
 <h2>PostgreSQL Cluster Overview</h2>
 <div id="cluster-overview" class="overview-grid"></div>
@@ -3761,6 +3835,59 @@ ${cluster.performance_status}
 
         container.appendChild(card);
     });
+}
+
+function collectionAge(value) {
+    if (!value) return '-';
+    const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+    if (seconds < 60) return seconds + ' sec ago';
+    if (seconds < 3600) return Math.floor(seconds / 60) + ' min ago';
+    return Math.floor(seconds / 3600) + ' hr ago';
+}
+
+function setPlatformStatus(engine, status, clusters, databases, lastCollection) {
+    const badge = document.getElementById(engine + '-platform-status');
+    badge.innerText = status;
+    badge.className = 'cluster-status status-' + status;
+    document.getElementById(engine + '-platform-clusters').innerText = clusters;
+    document.getElementById(engine + '-platform-databases').innerText = databases;
+    document.getElementById(engine + '-platform-last').innerText = collectionAge(lastCollection);
+}
+
+async function loadPlatformStatus() {
+    const [postgresResponse, oracleResponse] = await Promise.all([
+        fetch('/api/cluster-overview'),
+        fetch('/api/oracle/databases')
+    ]);
+
+    if (!postgresResponse.ok || !oracleResponse.ok) {
+        throw new Error('Platform status API failed.');
+    }
+
+    const postgres = await postgresResponse.json();
+    const oracle = await oracleResponse.json();
+    const postgresLast = postgres.reduce((latest, row) => {
+        if (row.seconds_since_collection === null || row.seconds_since_collection === undefined) return latest;
+        const captured = new Date(Date.now() - Number(row.seconds_since_collection) * 1000).toISOString();
+        return !latest || captured > latest ? captured : latest;
+    }, null);
+    const postgresStatus = postgres.some(row => row.health_status === 'OFFLINE')
+        ? 'OFFLINE'
+        : postgres.length ? 'HEALTHY' : 'UNKNOWN';
+    setPlatformStatus(
+        'postgresql', postgresStatus, postgres.length,
+        postgres.reduce((total, row) => total + Number(row.database_count || 0), 0),
+        postgresLast
+    );
+
+    const oracleClusters = new Set(oracle.map(row => row.cluster_id)).size;
+    const oracleLast = oracle.reduce((latest, row) => {
+        if (!row.last_collection) return latest;
+        return !latest || row.last_collection > latest ? row.last_collection : latest;
+    }, null);
+    const oracleAge = oracleLast ? (Date.now() - new Date(oracleLast).getTime()) / 1000 : null;
+    const oracleStatus = oracleAge === null ? 'UNKNOWN' : oracleAge > 120 ? 'OFFLINE' : 'HEALTHY';
+    setPlatformStatus('oracle', oracleStatus, oracleClusters, oracle.length, oracleLast);
 }
 
 async function loadClusters() {
@@ -5175,6 +5302,7 @@ async function refreshAll() {
     status.innerText = 'Refreshing...';
 
     try {
+        await loadPlatformStatus();
         await loadClusterOverview();
         await refreshDetail();
 
@@ -5899,6 +6027,10 @@ async function start() {
 
 document.querySelectorAll('.engine-tab').forEach(tab => {
     tab.addEventListener('click', () => selectEngine(tab.dataset.engine));
+});
+
+document.querySelectorAll('.platform-status-card').forEach(card => {
+    card.addEventListener('click', () => selectEngine(card.dataset.engine));
 });
 
 document.getElementById(
