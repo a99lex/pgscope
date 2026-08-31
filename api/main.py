@@ -2687,6 +2687,28 @@ h1 {
     align-items: center;
 }
 
+.engine-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 0 0 16px;
+    border-bottom: 1px solid #334155;
+}
+
+.engine-tab {
+    border: 0;
+    border-bottom: 3px solid transparent;
+    border-radius: 8px 8px 0 0;
+    padding: 11px 22px;
+    color: #94a3b8;
+    font-weight: 700;
+}
+
+.engine-tab.active {
+    color: #f8fafc;
+    background: #1e293b;
+    border-bottom-color: #3b82f6;
+}
+
 select,
 button {
     background: #0f172a;
@@ -3174,12 +3196,18 @@ Close
 <h3>Top Queries</h3><table><thead><tr><th>Query ID</th><th>Calls</th><th>Total ms</th><th>Avg ms</th><th>WAL MB</th><th>Query</th></tr></thead>
 <tbody id="report-top-queries"></tbody></table></div>
 <div class="form-actions"><button id="print-report-button" class="report-button">Print / Save PDF</button><button id="close-report-button">Close</button></div></div></div>
-<h2>Cluster Overview</h2>
+<div id="pg-cluster-overview-section">
+<h2>PostgreSQL Cluster Overview</h2>
 <div id="cluster-overview" class="overview-grid"></div>
+</div>
+
+<div class="engine-tabs" role="tablist" aria-label="Database engine">
+<button class="engine-tab active" type="button" role="tab" aria-selected="true" data-engine="postgresql">PostgreSQL</button>
+<button class="engine-tab" type="button" role="tab" aria-selected="false" data-engine="oracle">Oracle</button>
+</div>
 
 <div class="toolbar">
-<label>Engine</label>
-<select id="engine-select">
+<select id="engine-select" hidden aria-hidden="true">
 <option value="postgresql">PostgreSQL</option>
 <option value="oracle">Oracle</option>
 </select>
@@ -3629,6 +3657,18 @@ function escapeHtml(text) {
 
 function currentEngine() {
     return document.getElementById("engine-select").value;
+}
+
+async function selectEngine(engine) {
+    document.getElementById('engine-select').value = engine;
+
+    document.querySelectorAll('.engine-tab').forEach(tab => {
+        const active = tab.dataset.engine === engine;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    await engineChanged();
 }
 
 function currentCluster() {
@@ -5106,6 +5146,9 @@ function updateEnginePanels() {
     document.getElementById('generate-report-button').style.display =
         oracle ? 'none' : '';
 
+    document.getElementById('pg-cluster-overview-section').style.display =
+        oracle ? 'none' : '';
+
     document.getElementById('add-cluster-button').innerText =
         oracle ? '+ Add Oracle Cluster / DB' : '+ Add Cluster / DB';
 }
@@ -5854,12 +5897,9 @@ async function start() {
     await refreshAll();
 }
 
-document.getElementById(
-    'engine-select'
-).addEventListener(
-    'change',
-    engineChanged
-);
+document.querySelectorAll('.engine-tab').forEach(tab => {
+    tab.addEventListener('click', () => selectEngine(tab.dataset.engine));
+});
 
 document.getElementById(
     'refresh-button'
