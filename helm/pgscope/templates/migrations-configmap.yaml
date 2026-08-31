@@ -18,3 +18,6 @@ data:
 
   005_plan_regression.sql: |
 {{ .Files.Get "migrations/005_plan_regression.sql" | indent 4 }}
+
+  006_oracle_targets.sql: |
+{{ .Files.Get "migrations/006_oracle_targets.sql" | indent 4 }}
