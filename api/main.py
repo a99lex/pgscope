@@ -1050,7 +1050,7 @@ def get_connection():
     )
 
 
-app.include_router(build_oracle_router(get_connection))
+app.include_router(build_oracle_router(get_connection, read_secret_value))
 
 
 @app.get("/health/live")
@@ -3044,7 +3044,7 @@ canvas {
 
 <div id="database-modal" class="modal-bg">
 <div class="modal">
-<h2>Add Database</h2>
+<h2 id="database-modal-title">Add Database</h2>
 
 <div class="form-grid">
 <div class="form-field full">
@@ -3053,7 +3053,7 @@ canvas {
 </div>
 
 <div class="form-field full">
-<label>Database name</label>
+<label id="database-name-label">Database name</label>
 <input id="new-database-name" placeholder="shopdemo">
 <div class="form-help">
 The database will use the existing cluster host, monitor user and Kubernetes Secret.
@@ -3073,7 +3073,7 @@ The database will use the existing cluster host, monitor user and Kubernetes Sec
 
 <div id="cluster-modal" class="modal-bg">
 <div class="modal">
-<h2>Add Cluster / DB</h2>
+<h2 id="cluster-modal-title">Add Cluster / DB</h2>
 <div class="form-grid">
 <div class="form-field"><label>Cluster ID</label><input id="new-cluster-id" placeholder="prod-eu-1"></div>
 <div class="form-field"><label>Name</label><input id="new-cluster-name" placeholder="Production EU"></div>
@@ -3081,7 +3081,7 @@ The database will use the existing cluster host, monitor user and Kubernetes Sec
 <div class="form-field"><label>Port</label><input id="new-port" type="number" value="5432"></div>
 <div class="form-field"><label>Username</label><input id="new-username" placeholder="pgscope_monitor"></div>
 <div class="form-field"><label>Password (test only)</label><input id="new-password" type="password"></div>
-<div class="form-field full"><label>Databases</label><input id="new-databases" placeholder="postgres, appdb"></div>
+<div class="form-field full"><label id="databases-label">Databases</label><input id="new-databases" placeholder="postgres, appdb"></div>
 <div class="form-field"><label>Kubernetes secret name</label><input id="new-secret-name" placeholder="pgscope-db"></div>
 <div class="form-field"><label>Secret key</label><input id="new-secret-key" placeholder="lab2-source-password"></div>
 </div>
@@ -5106,14 +5106,8 @@ function updateEnginePanels() {
     document.getElementById('generate-report-button').style.display =
         oracle ? 'none' : '';
 
-    document.getElementById('add-database-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('disable-database-button').style.display =
-        oracle ? 'none' : '';
-
-    document.getElementById('disable-cluster-button').style.display =
-        oracle ? 'none' : '';
+    document.getElementById('add-cluster-button').innerText =
+        oracle ? '+ Add Oracle Cluster / DB' : '+ Add Cluster / DB';
 }
 
 async function refreshDetail() {
@@ -5225,6 +5219,10 @@ function showAddDatabase() {
 
     document.getElementById('database-cluster-name').value = cluster;
     document.getElementById('new-database-name').value = '';
+    document.getElementById('database-modal-title').innerText =
+        currentEngine() === 'oracle' ? 'Add Oracle Database' : 'Add Database';
+    document.getElementById('database-name-label').innerText =
+        currentEngine() === 'oracle' ? 'Service / database name' : 'Database name';
     status.innerText = '';
     document.getElementById('database-modal').style.display = 'flex';
 }
@@ -5252,7 +5250,9 @@ async function testAddDatabase() {
     status.innerText = 'Testing connection...';
 
     const response = await fetch(
-        '/api/test-configured-database',
+        currentEngine() === 'oracle'
+            ? '/api/oracle/test-configured-database'
+            : '/api/test-configured-database',
         {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -5263,7 +5263,7 @@ async function testAddDatabase() {
     const data = await response.json();
 
     status.innerText = response.ok
-        ? `Connection OK - PostgreSQL ${data.server_version}, ${data.database_name}${data.in_recovery ? ' (replica)' : ' (primary)'}`
+        ? `Connection OK - ${currentEngine() === 'oracle' ? '' : 'PostgreSQL '}${data.server_version}, ${data.database_name}${data.in_recovery ? ' (replica)' : ''}`
         : (data.detail || 'Connection test failed.');
 }
 
@@ -5279,7 +5279,9 @@ async function saveAddDatabase() {
     status.innerText = 'Adding database...';
 
     const response = await fetch(
-        '/api/configured-databases',
+        currentEngine() === 'oracle'
+            ? '/api/oracle/configured-databases'
+            : '/api/configured-databases',
         {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -5320,7 +5322,9 @@ async function disableCurrentDatabase() {
     }
 
     const response = await fetch(
-        '/api/configured-databases/'
+        (currentEngine() === 'oracle'
+            ? '/api/oracle/configured-databases/'
+            : '/api/configured-databases/')
         + encodeURIComponent(cluster)
         + '/'
         + encodeURIComponent(database),
@@ -5357,7 +5361,9 @@ async function disableCurrentCluster() {
     }
 
     const response = await fetch(
-        '/api/configured-clusters/' + encodeURIComponent(cluster),
+        (currentEngine() === 'oracle'
+            ? '/api/oracle/configured-clusters/'
+            : '/api/configured-clusters/') + encodeURIComponent(cluster),
         {method: 'DELETE'}
     );
 
@@ -5396,17 +5402,27 @@ function formValues() {
         databases: document.getElementById('new-databases').value.split(',').map(x => x.trim()).filter(Boolean)
     };
 }
-function showAddCluster(){ document.getElementById('cluster-modal').style.display='flex'; }
+function showAddCluster(){
+    const oracle = currentEngine() === 'oracle';
+    document.getElementById('cluster-modal-title').innerText =
+        oracle ? 'Add Oracle Cluster / DB' : 'Add Cluster / DB';
+    document.getElementById('databases-label').innerText =
+        oracle ? 'Services / databases' : 'Databases';
+    document.getElementById('new-port').value = oracle ? '1521' : '5432';
+    document.getElementById('new-host').placeholder = oracle ? 'oracle-scan' : 'postgres-rw';
+    document.getElementById('new-databases').placeholder = oracle ? 'ORCLPDB1, APPPDB' : 'postgres, appdb';
+    document.getElementById('cluster-modal').style.display='flex';
+}
 function hideAddCluster(){ document.getElementById('cluster-modal').style.display='none'; }
 
 async function testAddCluster() {
     const v=formValues(), st=document.getElementById('cluster-form-status');
     if(!v.host || !v.username || !v.password || !v.databases.length){ st.innerText='Host, username, password and database are required.'; return; }
     st.innerText='Testing connection...';
-    const res=await fetch('/api/test-cluster',{method:'POST',headers:{'Content-Type':'application/json'},
+    const res=await fetch(currentEngine() === 'oracle' ? '/api/oracle/test-cluster' : '/api/test-cluster',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({host:v.host,port:v.port,username:v.username,password:v.password,database:v.databases[0]})});
     const d=await res.json();
-    st.innerText=res.ok ? `Connection OK — PostgreSQL ${d.server_version}, ${d.database_name}${d.in_recovery?' (replica)':' (primary)'}` : (d.detail || 'Test failed');
+    st.innerText=res.ok ? `Connection OK — ${currentEngine() === 'oracle' ? '' : 'PostgreSQL '}${d.server_version}, ${d.database_name}${d.in_recovery?' (replica)':''}` : (d.detail || 'Test failed');
 }
 
 async function saveAddCluster() {
@@ -5433,7 +5449,9 @@ async function saveAddCluster() {
     st.innerText = 'Saving...';
 
     const res = await fetch(
-        '/api/configured-clusters',
+        currentEngine() === 'oracle'
+            ? '/api/oracle/configured-clusters'
+            : '/api/configured-clusters',
         {
             method: 'POST',
             headers: {

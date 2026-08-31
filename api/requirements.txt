@@ -2,3 +2,4 @@ fastapi
 uvicorn[standard]
 psycopg[binary]
 kubernetes
+oracledb>=2.5

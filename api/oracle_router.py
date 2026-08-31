@@ -21,17 +21,174 @@ from fastapi import (
     Query,
 )
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 def build_oracle_router(
     get_connection: Callable,
+    read_secret_value: Callable | None = None,
 ) -> APIRouter:
 
     router = APIRouter(
         prefix="/api/oracle",
         tags=["oracle"],
     )
+
+    class OracleClusterTestRequest(BaseModel):
+        host: str
+        port: int = 1521
+        username: str
+        password: str
+        database: str
+
+    class OracleClusterCreateRequest(BaseModel):
+        cluster_id: str = Field(min_length=1, max_length=100)
+        cluster_name: str = Field(min_length=1, max_length=200)
+        host: str = Field(min_length=1, max_length=255)
+        port: int = Field(default=1521, ge=1, le=65535)
+        username: str = Field(min_length=1, max_length=200)
+        secret_name: str = Field(min_length=1, max_length=253)
+        secret_key: str = Field(min_length=1, max_length=253)
+        databases: list[str]
+
+    class OracleDatabaseCreateRequest(BaseModel):
+        cluster_id: str
+        database_name: str
+
+    def test_oracle_connection(host, port, username, password, database):
+        try:
+            import oracledb
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail="Oracle driver is not installed.") from exc
+        try:
+            dsn = oracledb.makedsn(host, port, service_name=database)
+            with oracledb.connect(user=username, password=password, dsn=dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT banner FROM v$version WHERE banner LIKE 'Oracle%' FETCH FIRST 1 ROW ONLY")
+                    row = cur.fetchone()
+            return {"ok": True, "database_name": database, "server_version": row[0] if row else "Oracle"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Connection failed: {exc}") from exc
+
+    @router.post("/test-cluster")
+    def test_oracle_cluster(r: OracleClusterTestRequest):
+        return test_oracle_connection(r.host, r.port, r.username, r.password, r.database)
+
+    @router.post("/configured-clusters")
+    def save_oracle_cluster(r: OracleClusterCreateRequest):
+        databases = sorted({value.strip() for value in r.databases if value.strip()})
+        if not databases:
+            raise HTTPException(status_code=400, detail="At least one database is required.")
+        cluster_id = r.cluster_id.strip()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO oracle_monitored_clusters
+                        (cluster_id, cluster_name, host, port, username, secret_name, secret_key, enabled, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, true, now())
+                    ON CONFLICT (cluster_id) DO UPDATE SET
+                        cluster_name=EXCLUDED.cluster_name, host=EXCLUDED.host,
+                        port=EXCLUDED.port, username=EXCLUDED.username,
+                        secret_name=EXCLUDED.secret_name, secret_key=EXCLUDED.secret_key,
+                        enabled=true, updated_at=now()
+                    """, (cluster_id, r.cluster_name.strip(), r.host.strip(), r.port,
+                            r.username.strip(), r.secret_name.strip(), r.secret_key.strip()))
+                for database in databases:
+                    cur.execute("""
+                        INSERT INTO oracle_monitored_databases (cluster_id, database_name, enabled)
+                        VALUES (%s, %s, true)
+                        ON CONFLICT (cluster_id, database_name) DO UPDATE SET enabled=true
+                        """, (cluster_id, database))
+            conn.commit()
+        return {"ok": True, "cluster_id": cluster_id, "databases": databases}
+
+    @router.post("/configured-databases")
+    def save_oracle_database(r: OracleDatabaseCreateRequest):
+        cluster_id, database = r.cluster_id.strip(), r.database_name.strip()
+        if not cluster_id or not database:
+            raise HTTPException(status_code=400, detail="Cluster and database are required.")
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM oracle_monitored_clusters WHERE cluster_id=%s AND enabled=true", (cluster_id,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Oracle cluster not found.")
+                cur.execute("""
+                    INSERT INTO oracle_monitored_databases (cluster_id, database_name, enabled)
+                    VALUES (%s, %s, true)
+                    ON CONFLICT (cluster_id, database_name) DO UPDATE SET enabled=true
+                    """, (cluster_id, database))
+            conn.commit()
+        return {"ok": True, "cluster_id": cluster_id, "database_name": database}
+
+    @router.post("/test-configured-database")
+    def test_configured_oracle_database(r: OracleDatabaseCreateRequest):
+        if read_secret_value is None:
+            raise HTTPException(status_code=503, detail="Secret reader is unavailable.")
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT host, port, username, secret_name, secret_key
+                    FROM oracle_monitored_clusters WHERE cluster_id=%s AND enabled=true
+                    """, (r.cluster_id.strip(),))
+                cluster = cur.fetchone()
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Oracle cluster not found.")
+        password = read_secret_value(cluster["secret_name"], cluster["secret_key"])
+        return test_oracle_connection(cluster["host"], cluster["port"], cluster["username"], password, r.database_name.strip())
+
+    @router.delete("/configured-databases/{cluster_id}/{database_name}")
+    def disable_oracle_database(cluster_id: str, database_name: str):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO oracle_monitored_clusters (cluster_id, cluster_name, enabled)
+                    SELECT %s, coalesce(max(cluster_name), %s), true
+                    FROM oracle_query_snapshots WHERE cluster_id=%s
+                    HAVING count(*) > 0
+                    ON CONFLICT (cluster_id) DO NOTHING
+                    """, (cluster_id, cluster_id, cluster_id))
+                cur.execute("""
+                    INSERT INTO oracle_monitored_databases (cluster_id, database_name, enabled)
+                    SELECT %s, %s, false
+                    WHERE EXISTS (
+                        SELECT 1 FROM oracle_query_snapshots
+                        WHERE cluster_id=%s AND database_name=%s
+                    ) OR EXISTS (
+                        SELECT 1 FROM oracle_monitored_databases
+                        WHERE cluster_id=%s AND database_name=%s AND enabled=true
+                    )
+                    ON CONFLICT (cluster_id, database_name) DO UPDATE SET enabled=false
+                    RETURNING database_name
+                    """, (cluster_id, database_name, cluster_id, database_name,
+                            cluster_id, database_name))
+                row = cur.fetchone()
+            conn.commit()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enabled Oracle database not found.")
+        return {"ok": True, "cluster_id": cluster_id, "database_name": database_name, "enabled": False}
+
+    @router.delete("/configured-clusters/{cluster_id}")
+    def disable_oracle_cluster(cluster_id: str):
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO oracle_monitored_clusters
+                        (cluster_id, cluster_name, enabled, updated_at)
+                    SELECT %s, coalesce(max(cluster_name), %s), false, now()
+                    FROM oracle_query_snapshots WHERE cluster_id=%s
+                    HAVING count(*) > 0
+                    ON CONFLICT (cluster_id) DO UPDATE
+                    SET enabled=false, updated_at=now()
+                    WHERE oracle_monitored_clusters.enabled=true
+                    RETURNING cluster_id
+                    """, (cluster_id, cluster_id, cluster_id))
+                row = cur.fetchone()
+                if row:
+                    cur.execute("UPDATE oracle_monitored_databases SET enabled=false WHERE cluster_id=%s", (cluster_id,))
+            conn.commit()
+        if not row:
+            raise HTTPException(status_code=404, detail="Enabled Oracle cluster not found.")
+        return {"ok": True, "cluster_id": cluster_id, "enabled": False}
 
     @router.get("/summary")
     def oracle_summary(
@@ -199,24 +356,31 @@ def build_oracle_router(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT
-                        cluster_id,
-                        cluster_name,
-                        database_name,
-                        max(
-                            captured_at
-                        ) AS last_collection
-
-                    FROM oracle_query_snapshots
-
-                    GROUP BY
-                        cluster_id,
-                        cluster_name,
-                        database_name
-
-                    ORDER BY
-                        cluster_name,
-                        database_name
+                    WITH observed AS (
+                        SELECT cluster_id, max(cluster_name) AS cluster_name,
+                               database_name, max(captured_at) AS last_collection
+                        FROM oracle_query_snapshots
+                        GROUP BY cluster_id, database_name
+                    ), configured AS (
+                        SELECT c.cluster_id, c.cluster_name, d.database_name,
+                               o.last_collection
+                        FROM oracle_monitored_clusters c
+                        JOIN oracle_monitored_databases d USING (cluster_id)
+                        LEFT JOIN observed o USING (cluster_id, database_name)
+                        WHERE c.enabled=true AND d.enabled=true
+                    )
+                    SELECT * FROM configured
+                    UNION ALL
+                    SELECT o.* FROM observed o
+                    LEFT JOIN oracle_monitored_clusters c USING (cluster_id)
+                    LEFT JOIN oracle_monitored_databases d USING (cluster_id, database_name)
+                    WHERE (c.cluster_id IS NULL OR c.enabled=true)
+                      AND (d.database_name IS NULL OR d.enabled=true)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM configured x
+                          WHERE x.cluster_id=o.cluster_id AND x.database_name=o.database_name
+                      )
+                    ORDER BY cluster_name, database_name
                     """
                 )
 
