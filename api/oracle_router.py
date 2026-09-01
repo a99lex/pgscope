@@ -1488,6 +1488,42 @@ def build_oracle_router(
     @router.post("/configured-explain")
     def oracle_configured_explain(req: OracleConfiguredSqlRequest):
         connection = configured_oracle_connection(req)
+
+        try:
+            import oracledb
+
+            dsn = oracledb.makedsn(
+                connection["host"],
+                connection["port"],
+                service_name=connection["service_name"],
+            )
+
+            with oracledb.connect(
+                user=connection["username"],
+                password=connection["password"],
+                dsn=dsn,
+            ) as oracle_conn:
+                with oracle_conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT sql_fulltext
+                        FROM v$sqlstats
+                        WHERE sql_id = :sql_id
+                          AND sql_fulltext IS NOT NULL
+                        ORDER BY last_active_time DESC
+                        FETCH FIRST 1 ROW ONLY
+                        """,
+                        sql_id=req.sql_id.strip().lower(),
+                    )
+                    oracle_row = cur.fetchone()
+
+            query_text = oracle_row[0] if oracle_row else None
+            if hasattr(query_text, "read"):
+                query_text = query_text.read()
+
+        except Exception:
+            query_text = None
+
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -1502,13 +1538,15 @@ def build_oracle_router(
                 )
                 row = cur.fetchone()
 
-        if not row or not row["query_text"]:
+        query_text = query_text or (row["query_text"] if row else None)
+
+        if not query_text:
             raise HTTPException(status_code=404, detail="Oracle SQL text not found.")
 
         return oracle_explain(
             OracleExplainRequest(
                 **connection,
-                sql=row["query_text"],
+                sql=query_text,
             )
         )
 
