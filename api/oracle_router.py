@@ -13,6 +13,8 @@ The current-plan endpoint reads V$SQL_PLAN from the
 current shared pool only.
 """
 
+import re
+
 from typing import Callable
 
 from fastapi import (
@@ -1403,11 +1405,26 @@ def build_oracle_router(
                     "'PGSCOPE'"
                 )
 
+                bind_names = sorted(
+                    set(
+                        re.findall(
+                            r"(?<!:):([A-Za-z][A-Za-z0-9_$#]*)",
+                            statement,
+                        )
+                    )
+                )
+
+                bind_values = {
+                    name: None
+                    for name in bind_names
+                }
+
                 cur.execute(
                     "EXPLAIN PLAN "
                     "SET STATEMENT_ID = "
                     "'PGSCOPE' FOR "
-                    + statement
+                    + statement,
+                    bind_values,
                 )
 
                 cur.execute(
@@ -1442,6 +1459,8 @@ def build_oracle_router(
                     "oracle",
                 "sql":
                     statement,
+                "bind_names":
+                    bind_names,
                 "plan":
                     plan,
             }

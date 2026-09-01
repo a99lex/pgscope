@@ -4942,7 +4942,10 @@ async function explainOracleSql() {
 
         plan.innerText = (data.plan || []).join('\\n');
         result.style.display = 'block';
-        status.innerText = 'Explain Plan generated without executing the SQL.';
+        status.innerText = 'Explain Plan generated without executing the SQL.'
+            + ((data.bind_names || []).length
+                ? ' Bind variables estimated as NULL: ' + data.bind_names.join(', ')
+                : '');
     } catch (error) {
         status.className = 'oracle-status oracle-error';
         status.innerText = 'Explain Plan failed: ' + error.message;
