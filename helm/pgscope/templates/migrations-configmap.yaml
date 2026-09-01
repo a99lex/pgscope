@@ -21,3 +21,6 @@ data:
 
   006_oracle_targets.sql: |
 {{ .Files.Get "migrations/006_oracle_targets.sql" | indent 4 }}
+
+  007_cluster_engine.sql: |
+{{ .Files.Get "migrations/007_cluster_engine.sql" | indent 4 }}

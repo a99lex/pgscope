@@ -150,7 +150,7 @@ SELECT *
 FROM (
     SELECT
         s.sql_id,
-        s.parsing_schema_name AS parsing_schema,
+        CAST(NULL AS VARCHAR2(128)) AS parsing_schema,
         s.plan_hash_value,
         s.last_active_time,
         s.executions,
@@ -381,10 +381,7 @@ def collect_real():
                 "instance_number"
             ),
         "database_name":
-            instance.get(
-                "database_name"
-            )
-            or DATABASE_NAME,
+            DATABASE_NAME,
         "queries":
             queries,
         "sessions":

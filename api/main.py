@@ -104,6 +104,7 @@ def monitored_cluster(
                 FROM monitored_clusters
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 """,
                 (cluster_id,),
             )
@@ -423,6 +424,14 @@ button {{
     text-decoration: underline;
 }}
 
+.oracle-clickable-row {{
+    cursor: pointer;
+}}
+
+.oracle-clickable-row:hover td {{
+    background: rgba(59, 130, 246, .08);
+}}
+
 .oracle-detail-grid {{
     display: grid;
     grid-template-columns: repeat(
@@ -520,7 +529,7 @@ button {{
 <body>
 <div class="login-card">
 <h1>PgScope</h1>
-<div class="subtitle">PostgreSQL Performance Advisor</div>
+<div class="subtitle">PostgreSQL &amp; Oracle Performance Advisor</div>
 {error_html}
 <form method="post" action="/login">
 <label>Username</label>
@@ -1182,7 +1191,7 @@ def clusters():
         cluster_id,
         cluster_name
     FROM monitored_clusters
-    WHERE enabled = true
+    WHERE enabled = true AND engine = 'postgresql'
     ORDER BY cluster_name, cluster_id
     """
 
@@ -1198,14 +1207,17 @@ def databases(
 ):
     sql = """
     SELECT
-        database_name
-    FROM monitored_databases
-    WHERE enabled = true
+        d.database_name
+    FROM monitored_databases d
+    JOIN monitored_clusters c USING (cluster_id)
+    WHERE d.enabled = true
+      AND c.enabled = true
+      AND c.engine = 'postgresql'
       AND (
           %s::text IS NULL
-          OR cluster_id = %s::text
+          OR d.cluster_id = %s::text
       )
-    ORDER BY database_name
+    ORDER BY d.database_name
     """
 
     with get_connection() as conn:
@@ -1666,14 +1678,14 @@ def save_cluster(r: ClusterCreateRequest):
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""INSERT INTO monitored_clusters
-                    (cluster_id,cluster_name,host,port,username,secret_name,secret_key,enabled,updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,true,now())
+                    (cluster_id,cluster_name,host,port,username,secret_name,secret_key,enabled,engine,updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,true,'postgresql',now())
                     ON CONFLICT (cluster_id) DO UPDATE SET
                     cluster_name=EXCLUDED.cluster_name, host=EXCLUDED.host,
                     port=EXCLUDED.port, username=EXCLUDED.username,
                     secret_name=EXCLUDED.secret_name,
                     secret_key=EXCLUDED.secret_key,
-                    enabled=true, updated_at=now()""",
+                    enabled=true, engine='postgresql', updated_at=now()""",
                     (r.cluster_id.strip(), r.cluster_name.strip(), r.host.strip(),
                      r.port, r.username.strip(), r.secret_name, r.secret_key))
                 for db in dbs:
@@ -1711,6 +1723,7 @@ def save_database(r: DatabaseCreateRequest):
                 FROM monitored_clusters
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 """,
                 (cluster_id,),
             )
@@ -1762,6 +1775,7 @@ def test_configured_database(r: DatabaseCreateRequest):
                 FROM monitored_clusters
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 """,
                 (cluster_id,),
             )
@@ -1814,12 +1828,15 @@ def disable_database(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE monitored_databases
+                UPDATE monitored_databases d
                 SET enabled = false
-                WHERE cluster_id = %s
-                  AND database_name = %s
-                  AND enabled = true
-                RETURNING database_name
+                FROM monitored_clusters c
+                WHERE d.cluster_id = %s
+                  AND d.database_name = %s
+                  AND d.enabled = true
+                  AND c.cluster_id = d.cluster_id
+                  AND c.engine = 'postgresql'
+                RETURNING d.database_name
                 """,
                 (cluster_id, database_name),
             )
@@ -1851,6 +1868,7 @@ def disable_cluster(cluster_id: str):
                     updated_at = now()
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 RETURNING cluster_id
                 """,
                 (cluster_id,),
@@ -3105,7 +3123,7 @@ canvas {
 <body>
 
 <h1>PgScope</h1>
-<div class="subtitle">PostgreSQL Performance Advisor</div>
+<div class="subtitle">PostgreSQL &amp; Oracle Performance Advisor</div>
 
 
 <button id="add-cluster-button" class="add-btn">+ Add Cluster / DB</button>
@@ -3225,7 +3243,7 @@ Close
 
 
 <div id="report-modal" class="report-modal-bg"><div class="report-modal">
-<h2>PostgreSQL Health Report</h2>
+<h2 id="report-title">Database Health Report</h2>
 <div class="form-grid" style="margin-bottom:14px">
 <div class="form-field">
 <label>Customer</label>
@@ -3241,7 +3259,7 @@ Close
 <div id="report-meta" class="report-check" style="margin-bottom:14px"></div>
 <div id="report-score" class="report-score"></div><div id="report-grade" class="cluster-status"></div>
 <h3>Health Checks</h3><div id="report-checks"></div><h3>Recommendations</h3><div id="report-recommendations"></div>
-<h3>Top Queries</h3><table><thead><tr><th>Query ID</th><th>Calls</th><th>Total ms</th><th>Avg ms</th><th>WAL MB</th><th>Query</th></tr></thead>
+<h3>Top Queries</h3><table><thead><tr><th id="report-query-id-heading">Query ID</th><th id="report-calls-heading">Calls</th><th>Total ms</th><th>Avg ms</th><th id="report-io-heading">WAL MB</th><th>Query</th></tr></thead>
 <tbody id="report-top-queries"></tbody></table></div>
 <div class="form-actions"><button id="print-report-button" class="report-button">Print / Save PDF</button><button id="close-report-button">Close</button></div></div></div>
 
@@ -3497,38 +3515,10 @@ Oracle SQL Details —
 <div class="subtitle">
 Reads the current shared-pool plan from V$SQL_PLAN.
 No AWR/ASH or SQL Monitor is used.
+The configured Kubernetes Secret is used automatically.
 </div>
 
 <div class="oracle-plan-form">
-
-<input
-    id="oracle-plan-host"
-    placeholder="Oracle host"
->
-
-<input
-    id="oracle-plan-port"
-    type="number"
-    value="1521"
-    placeholder="Port"
->
-
-<input
-    id="oracle-plan-service"
-    placeholder="Service name"
->
-
-<input
-    id="oracle-plan-user"
-    placeholder="Monitor user"
->
-
-<input
-    id="oracle-plan-password"
-    type="password"
-    placeholder="Password"
->
-
 <input
     id="oracle-plan-child"
     type="number"
@@ -3542,6 +3532,13 @@ No AWR/ASH or SQL Monitor is used.
     class="primary-button"
 >
 Load Current Plan
+</button>
+
+<button
+    onclick="explainOracleSql()"
+    class="explain-button"
+>
+Explain SQL
 </button>
 
 <div
@@ -3578,6 +3575,11 @@ Load Current Plan
 
 </table>
 
+</div>
+
+<div id="oracle-explain-result" style="display:none">
+<h3>Explain Plan</h3>
+<pre id="oracle-explain-plan" class="explain-plan"></pre>
 </div>
 
 </div>
@@ -3886,7 +3888,10 @@ async function loadPlatformStatus() {
         return !latest || row.last_collection > latest ? row.last_collection : latest;
     }, null);
     const oracleAge = oracleLast ? (Date.now() - new Date(oracleLast).getTime()) / 1000 : null;
-    const oracleStatus = oracleAge === null ? 'UNKNOWN' : oracleAge > 120 ? 'OFFLINE' : 'HEALTHY';
+    const oracleConfigured = oracle.some(row => row.configured === true);
+    const oracleStatus = !oracleConfigured || oracleAge === null
+        ? 'UNKNOWN'
+        : oracleAge > 120 ? 'OFFLINE' : 'HEALTHY';
     setPlatformStatus('oracle', oracleStatus, oracleClusters, oracle.length, oracleLast);
 }
 
@@ -4394,6 +4399,10 @@ async function showOracleSqlDetails(
     ).style.display = 'none';
 
     document.getElementById(
+        'oracle-explain-result'
+    ).style.display = 'none';
+
+    document.getElementById(
         'oracle-plan-status'
     ).innerText = '';
 
@@ -4720,34 +4729,8 @@ async function loadOracleCurrentPlan() {
         ).value.trim();
 
     const payload = {
-        host:
-            document.getElementById(
-                'oracle-plan-host'
-            ).value.trim(),
-
-        port:
-            Number(
-                document.getElementById(
-                    'oracle-plan-port'
-                ).value
-                || 1521
-            ),
-
-        service_name:
-            document.getElementById(
-                'oracle-plan-service'
-            ).value.trim(),
-
-        username:
-            document.getElementById(
-                'oracle-plan-user'
-            ).value.trim(),
-
-        password:
-            document.getElementById(
-                'oracle-plan-password'
-            ).value,
-
+        cluster_id: currentCluster(),
+        database: currentDatabase(),
         sql_id:
             currentOracleSqlId,
 
@@ -4757,26 +4740,10 @@ async function loadOracleCurrentPlan() {
                 : null
     };
 
-    if (
-        !payload.host
-        || !payload.service_name
-        || !payload.username
-        || !payload.password
-    ) {
-        status.className =
-            'oracle-status oracle-error';
-
-        status.innerText =
-            'Host, service, user and '
-            + 'password are required.';
-
-        return;
-    }
-
     try {
         const response =
             await fetch(
-                '/api/oracle/current-plan',
+                '/api/oracle/configured-current-plan',
                 {
                     method: 'POST',
 
@@ -4929,6 +4896,41 @@ async function loadOracleCurrentPlan() {
 }
 
 
+async function explainOracleSql() {
+    if (!currentOracleSqlId) return;
+
+    const status = document.getElementById('oracle-plan-status');
+    const result = document.getElementById('oracle-explain-result');
+    const plan = document.getElementById('oracle-explain-plan');
+
+    status.className = 'oracle-status';
+    status.innerText = 'Generating Oracle Explain Plan...';
+    result.style.display = 'none';
+
+    try {
+        const response = await fetch('/api/oracle/configured-explain', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                cluster_id: currentCluster(),
+                database: currentDatabase(),
+                sql_id: currentOracleSqlId,
+                child_number: null
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Explain API failed');
+
+        plan.innerText = (data.plan || []).join('\n');
+        result.style.display = 'block';
+        status.innerText = 'Explain Plan generated without executing the SQL.';
+    } catch (error) {
+        status.className = 'oracle-status oracle-error';
+        status.innerText = 'Explain Plan failed: ' + error.message;
+    }
+}
+
+
 async function loadOracleDashboard() {
     const cluster = currentCluster();
     const database = currentDatabase();
@@ -5031,6 +5033,9 @@ async function loadOracleDashboard() {
                 'tr'
             );
 
+        row.className = 'oracle-clickable-row';
+        row.title = 'Open SQL history and execution plan';
+
         row.innerHTML = `
 <td>
 <span
@@ -5055,6 +5060,11 @@ ${escapeHtml(q.sql_id)}
         topSqlTable.appendChild(
             row
         );
+
+        row.addEventListener('click', event => {
+            if (event.target.closest('.oracle-sql-link')) return;
+            showOracleSqlDetails(q.sql_id);
+        });
     });
 
     topSqlTable
@@ -5270,8 +5280,7 @@ function updateEnginePanels() {
     document.getElementById('oracle-dashboard').style.display =
         oracle ? 'block' : 'none';
 
-    document.getElementById('generate-report-button').style.display =
-        oracle ? 'none' : '';
+    document.getElementById('generate-report-button').style.display = '';
 
     document.getElementById('pg-cluster-overview-section').style.display =
         oracle ? 'none' : '';
@@ -5346,8 +5355,13 @@ async function selectCluster(clusterId) {
 
 async function generateHealthReport(){
  const cluster=currentCluster(),database=currentDatabase(),minutes=currentMinutes();
+ const oracle=currentEngine()==='oracle';
  const modal=document.getElementById('report-modal'),status=document.getElementById('report-status'),content=document.getElementById('report-content');
- modal.style.display='flex'; content.style.display='none'; status.innerText='Analyzing PostgreSQL...';
+ modal.style.display='flex'; content.style.display='none'; status.innerText='Analyzing '+(oracle?'Oracle':'PostgreSQL')+'...';
+ document.getElementById('report-title').innerText=(oracle?'Oracle':'PostgreSQL')+' Health Report';
+ document.getElementById('report-query-id-heading').innerText=oracle?'SQL ID':'Query ID';
+ document.getElementById('report-calls-heading').innerText=oracle?'Executions':'Calls';
+ document.getElementById('report-io-heading').innerText=oracle?'Disk Reads':'WAL MB';
  document.getElementById('report-target').innerText=cluster+' / '+database+' — last '+minutes+' minutes';
  const customer=document.getElementById('report-customer').value.trim()||'-';
  const environment=document.getElementById('report-environment').value.trim()||'-';
@@ -5360,7 +5374,8 @@ async function generateHealthReport(){
   '<b>Report period:</b> last '+escapeHtml(String(minutes))+' minutes<br>'+
   '<b>Generated:</b> '+escapeHtml(generated);
  try{
-  const res=await fetch('/api/health-report?cluster_id='+encodeURIComponent(cluster)+'&database='+encodeURIComponent(database)+'&minutes='+minutes);
+  const endpoint=oracle?'/api/oracle/health-report':'/api/health-report';
+  const res=await fetch(endpoint+'?cluster_id='+encodeURIComponent(cluster)+'&database='+encodeURIComponent(database)+'&minutes='+minutes);
   const d=await res.json(); if(!res.ok) throw new Error(d.detail||'Report failed');
   status.innerText=''; content.style.display='block';
   document.getElementById('report-score').innerText=d.score+'/100';
@@ -5371,7 +5386,7 @@ async function generateHealthReport(){
    el.innerHTML='<b>'+escapeHtml(c.title)+' — '+escapeHtml(c.status)+' — '+escapeHtml(String(c.value??'-'))+'</b><div class="report-check-detail">'+escapeHtml(c.detail||'')+'</div>'+(c.recommendation?'<div class="report-rec">'+escapeHtml(c.recommendation)+'</div>':'');checks.appendChild(el);});
   document.getElementById('report-recommendations').innerHTML=d.recommendations.length?'<ol>'+d.recommendations.map(x=>'<li>'+escapeHtml(x)+'</li>').join('')+'</ol>':'No immediate recommendations.';
   const tq=document.getElementById('report-top-queries'); tq.innerHTML='';
-  (d.metrics.top_queries||[]).forEach(q=>{const r=document.createElement('tr');r.innerHTML='<td>'+escapeHtml(q.queryid)+'</td><td>'+q.calls+'</td><td>'+q.total_exec_ms+'</td><td>'+q.avg_exec_ms+'</td><td>'+q.wal_mb+'</td><td class="query">'+escapeHtml(q.query_text)+'</td>';tq.appendChild(r);});
+  (d.metrics.top_queries||[]).forEach(q=>{const r=document.createElement('tr');r.innerHTML='<td>'+escapeHtml(oracle?q.sql_id:q.queryid)+'</td><td>'+(oracle?q.executions:q.calls)+'</td><td>'+(oracle?q.elapsed_ms:q.total_exec_ms)+'</td><td>'+q.avg_exec_ms+'</td><td>'+(oracle?q.disk_reads:q.wal_mb)+'</td><td class="query">'+escapeHtml(q.query_text)+'</td>';tq.appendChild(r);});
  }catch(e){status.innerText='Health report failed: '+e.message;}
 }
 function printHealthReport(){
