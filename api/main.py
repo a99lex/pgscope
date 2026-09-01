@@ -4921,7 +4921,7 @@ async function explainOracleSql() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'Explain API failed');
 
-        plan.innerText = (data.plan || []).join('\n');
+        plan.innerText = (data.plan || []).join('\\n');
         result.style.display = 'block';
         status.innerText = 'Explain Plan generated without executing the SQL.';
     } catch (error) {
