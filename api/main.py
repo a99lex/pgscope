@@ -104,6 +104,7 @@ def monitored_cluster(
                 FROM monitored_clusters
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 """,
                 (cluster_id,),
             )
@@ -520,7 +521,7 @@ button {{
 <body>
 <div class="login-card">
 <h1>PgScope</h1>
-<div class="subtitle">PostgreSQL Performance Advisor</div>
+<div class="subtitle">PostgreSQL &amp; Oracle Performance Advisor</div>
 {error_html}
 <form method="post" action="/login">
 <label>Username</label>
@@ -1182,7 +1183,7 @@ def clusters():
         cluster_id,
         cluster_name
     FROM monitored_clusters
-    WHERE enabled = true
+    WHERE enabled = true AND engine = 'postgresql'
     ORDER BY cluster_name, cluster_id
     """
 
@@ -1198,14 +1199,17 @@ def databases(
 ):
     sql = """
     SELECT
-        database_name
-    FROM monitored_databases
-    WHERE enabled = true
+        d.database_name
+    FROM monitored_databases d
+    JOIN monitored_clusters c USING (cluster_id)
+    WHERE d.enabled = true
+      AND c.enabled = true
+      AND c.engine = 'postgresql'
       AND (
           %s::text IS NULL
-          OR cluster_id = %s::text
+          OR d.cluster_id = %s::text
       )
-    ORDER BY database_name
+    ORDER BY d.database_name
     """
 
     with get_connection() as conn:
@@ -1666,14 +1670,14 @@ def save_cluster(r: ClusterCreateRequest):
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""INSERT INTO monitored_clusters
-                    (cluster_id,cluster_name,host,port,username,secret_name,secret_key,enabled,updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,true,now())
+                    (cluster_id,cluster_name,host,port,username,secret_name,secret_key,enabled,engine,updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,true,'postgresql',now())
                     ON CONFLICT (cluster_id) DO UPDATE SET
                     cluster_name=EXCLUDED.cluster_name, host=EXCLUDED.host,
                     port=EXCLUDED.port, username=EXCLUDED.username,
                     secret_name=EXCLUDED.secret_name,
                     secret_key=EXCLUDED.secret_key,
-                    enabled=true, updated_at=now()""",
+                    enabled=true, engine='postgresql', updated_at=now()""",
                     (r.cluster_id.strip(), r.cluster_name.strip(), r.host.strip(),
                      r.port, r.username.strip(), r.secret_name, r.secret_key))
                 for db in dbs:
@@ -1711,6 +1715,7 @@ def save_database(r: DatabaseCreateRequest):
                 FROM monitored_clusters
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 """,
                 (cluster_id,),
             )
@@ -1762,6 +1767,7 @@ def test_configured_database(r: DatabaseCreateRequest):
                 FROM monitored_clusters
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 """,
                 (cluster_id,),
             )
@@ -1814,12 +1820,15 @@ def disable_database(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE monitored_databases
+                UPDATE monitored_databases d
                 SET enabled = false
-                WHERE cluster_id = %s
-                  AND database_name = %s
-                  AND enabled = true
-                RETURNING database_name
+                FROM monitored_clusters c
+                WHERE d.cluster_id = %s
+                  AND d.database_name = %s
+                  AND d.enabled = true
+                  AND c.cluster_id = d.cluster_id
+                  AND c.engine = 'postgresql'
+                RETURNING d.database_name
                 """,
                 (cluster_id, database_name),
             )
@@ -1851,6 +1860,7 @@ def disable_cluster(cluster_id: str):
                     updated_at = now()
                 WHERE cluster_id = %s
                   AND enabled = true
+                  AND engine = 'postgresql'
                 RETURNING cluster_id
                 """,
                 (cluster_id,),
@@ -3105,7 +3115,7 @@ canvas {
 <body>
 
 <h1>PgScope</h1>
-<div class="subtitle">PostgreSQL Performance Advisor</div>
+<div class="subtitle">PostgreSQL &amp; Oracle Performance Advisor</div>
 
 
 <button id="add-cluster-button" class="add-btn">+ Add Cluster / DB</button>
@@ -3886,7 +3896,10 @@ async function loadPlatformStatus() {
         return !latest || row.last_collection > latest ? row.last_collection : latest;
     }, null);
     const oracleAge = oracleLast ? (Date.now() - new Date(oracleLast).getTime()) / 1000 : null;
-    const oracleStatus = oracleAge === null ? 'UNKNOWN' : oracleAge > 120 ? 'OFFLINE' : 'HEALTHY';
+    const oracleConfigured = oracle.some(row => row.configured === true);
+    const oracleStatus = !oracleConfigured || oracleAge === null
+        ? 'UNKNOWN'
+        : oracleAge > 120 ? 'OFFLINE' : 'HEALTHY';
     setPlatformStatus('oracle', oracleStatus, oracleClusters, oracle.length, oracleLast);
 }
 

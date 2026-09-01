@@ -101,6 +101,10 @@ spec:
                 -v api_user="$PGSCOPE_API_USER" \
                 -f /migrations/006_oracle_targets.sql
 
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/007_cluster_engine.sql
+
               echo "PgScope migrations complete."
 
           volumeMounts:
