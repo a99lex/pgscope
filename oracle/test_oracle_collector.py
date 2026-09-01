@@ -1,4 +1,4 @@
-from oracle_collector import assert_basic_sql, TOP_SQL, SESSIONS, WAITS, INSTANCE
+from oracle_collector import assert_basic_sql, clean_nul, TOP_SQL, SESSIONS, WAITS, INSTANCE
 
 
 def test_basic_queries_allowed():
@@ -22,3 +22,11 @@ def test_awr_is_rejected():
         assert "Forbidden" in str(exc)
     else:
         raise AssertionError("AWR should have been rejected")
+
+
+def test_clean_nul_recursively_sanitizes_collector_payload():
+    value = {"query_text": "select\x00 1", "sessions": [{"program": "app\x00"}]}
+    assert clean_nul(value) == {
+        "query_text": "select 1",
+        "sessions": [{"program": "app"}],
+    }

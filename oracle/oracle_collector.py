@@ -412,11 +412,24 @@ def n(
     return value
 
 
+def clean_nul(value):
+    """Remove Oracle NUL characters before writing text to PostgreSQL."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [clean_nul(item) for item in value]
+    if isinstance(value, dict):
+        return {key: clean_nul(item) for key, item in value.items()}
+    return value
+
+
 def insert_snapshot(
     store,
     captured_at,
     payload,
 ):
+    payload = clean_nul(payload)
+
     dbname = (
         payload.get(
             "database_name"

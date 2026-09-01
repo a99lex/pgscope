@@ -9,4 +9,8 @@ RUN sed -i \
     's/instance\.get(\n                "database_name"\n            )\n            or target\["database_name"\]/target["database_name"]/g' \
     /app/oracle_collector.py
 
+COPY patch_dynamic_collector.py /tmp/patch_dynamic_collector.py
+RUN python /tmp/patch_dynamic_collector.py \
+    && rm /tmp/patch_dynamic_collector.py
+
 USER 100
