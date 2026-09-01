@@ -3407,6 +3407,7 @@ Close
 <th>Buffer Gets</th>
 <th>Disk Reads</th>
 <th>Rows</th>
+<th>History / Plan</th>
 <th>SQL</th>
 </tr>
 </thead>
@@ -4393,6 +4394,13 @@ async function showOracleSqlDetails(
 
     panel.style.display = 'block';
 
+    requestAnimationFrame(() => {
+        panel.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+        });
+    });
+
     content.style.display = 'none';
 
     status.className =
@@ -5065,6 +5073,15 @@ ${escapeHtml(q.sql_id)}
 <td>${formatOracleNumber(q.buffer_gets)}</td>
 <td>${formatOracleNumber(q.disk_reads)}</td>
 <td>${formatOracleNumber(q.rows)}</td>
+<td>
+<button
+    type="button"
+    class="history-button oracle-details-button"
+    data-sql-id="${escapeHtml(q.sql_id)}"
+>
+History / Plan
+</button>
+</td>
 <td class="query">${escapeHtml(q.query_text)}</td>
 `;
 
@@ -5073,15 +5090,13 @@ ${escapeHtml(q.sql_id)}
         );
 
         row.addEventListener('click', event => {
-            if (event.target.closest('.oracle-sql-link')) return;
+            if (event.target.closest('.oracle-sql-link, .oracle-details-button')) return;
             showOracleSqlDetails(q.sql_id);
         });
     });
 
     topSqlTable
-        .querySelectorAll(
-            '.oracle-sql-link'
-        )
+        .querySelectorAll('.oracle-sql-link, .oracle-details-button')
         .forEach(link => {
             link.addEventListener(
                 'click',
