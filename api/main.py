@@ -3744,7 +3744,18 @@ async function selectEngine(engine) {
         tab.setAttribute('aria-selected', active ? 'true' : 'false');
     });
 
-    await engineChanged();
+    updateEnginePanels();
+
+    const status = document.getElementById('refresh-status');
+    status.innerText = 'Loading ' + (engine === 'oracle' ? 'Oracle' : 'PostgreSQL') + '...';
+
+    try {
+        await engineChanged();
+        status.innerText = 'Updated ' + new Date().toLocaleTimeString();
+    } catch (error) {
+        console.error(error);
+        status.innerText = 'Unable to load ' + (engine === 'oracle' ? 'Oracle' : 'PostgreSQL') + ': ' + error.message;
+    }
 }
 
 function currentCluster() {
@@ -6035,9 +6046,15 @@ ${recommendations}
 }
 
 async function start() {
-    await loadClusters();
-    await loadDatabases();
-    await refreshAll();
+    try {
+        await loadClusters();
+        await loadDatabases();
+        await refreshAll();
+    } catch (error) {
+        console.error(error);
+        document.getElementById('refresh-status').innerText =
+            'Dashboard startup failed: ' + error.message;
+    }
 }
 
 document.querySelectorAll('.engine-tab').forEach(tab => {
