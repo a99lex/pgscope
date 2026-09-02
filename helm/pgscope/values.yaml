@@ -26,7 +26,7 @@ api:
 collector:
   image:
     repository: pgscope-collector
-    tag: "1.1.1"
+    tag: "1.6.0"
     pullPolicy: IfNotPresent
 
   replicas: 1
@@ -54,7 +54,7 @@ retention:
   cleanupIntervalMinutes: 60
 
 storage:
-  host: pg-lab-rw
+  host: pg-lab2-rw
   port: 5432
   database: pgscope
 

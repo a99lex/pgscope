@@ -66,9 +66,13 @@ spec:
 
               echo "Running PgScope migrations..."
 
-              psql \
-                -v ON_ERROR_STOP=1 \
-                -f /migrations/001_schema.sql
+              if psql -tAc "SELECT to_regclass('public.findings') IS NULL" | grep -q t; then
+                echo "Creating PgScope base schema..."
+                psql -v ON_ERROR_STOP=1 \
+                  -f /migrations/001_schema.sql
+              else
+                echo "PgScope base schema already exists; skipping 001_schema.sql"
+              fi
 
               psql \
                 -v ON_ERROR_STOP=1 \
@@ -85,6 +89,21 @@ spec:
                 -v api_user="$PGSCOPE_API_USER" \
                 -v migrator_user="$PGSCOPE_MIGRATOR_USER" \
                 -f /migrations/004_api_grants.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -v api_user="$PGSCOPE_API_USER" \
+                -v writer_user="$PGSCOPE_WRITER_USER" \
+                -f /migrations/005_plan_regression.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -v api_user="$PGSCOPE_API_USER" \
+                -f /migrations/006_oracle_targets.sql
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/007_cluster_engine.sql
 
               echo "PgScope migrations complete."
 

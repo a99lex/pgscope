@@ -1,0 +1,16 @@
+FROM pgscope-oracle-collector:0.3.0
+
+USER root
+
+RUN sed -i \
+    's/s\.parsing_schema_name AS parsing_schema/CAST(NULL AS VARCHAR2(128)) AS parsing_schema/' \
+    /app/oracle_collector.py \
+    && sed -z -i \
+    's/instance\.get(\n                "database_name"\n            )\n            or target\["database_name"\]/target["database_name"]/g' \
+    /app/oracle_collector.py
+
+COPY patch_dynamic_collector.py /tmp/patch_dynamic_collector.py
+RUN python /tmp/patch_dynamic_collector.py \
+    && rm /tmp/patch_dynamic_collector.py
+
+USER 100

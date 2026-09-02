@@ -262,13 +262,14 @@ postgres-rw.database.svc.cluster.local
 
 PgScope runs database migrations automatically as a Kubernetes Job during installation.
 
-PgScope v1.5.0 includes:
+The current Helm chart includes:
 
 ```text
 001_schema.sql
 002_auth_first_login.sql
 003_storage_grants.sql
 004_api_grants.sql
+005_plan_regression.sql
 ```
 
 The migrations create the PgScope schema, authentication objects and database privileges required by the API and Collector.

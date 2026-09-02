@@ -42,3 +42,6 @@ postgresqltuner.pl
 main_v*.py
 collector_v*.py
 pgscope-v*.zip
+shopdemo_workload.log
+shopdemo_bad_workload.log
+shopdemo_workload.log
