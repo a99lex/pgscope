@@ -3163,6 +3163,7 @@ The database will use the existing cluster host, monitor user and Kubernetes Sec
 <div class="modal">
 <h2 id="cluster-modal-title">Add Cluster / DB</h2>
 <div class="form-grid">
+<div class="form-field full"><label>Database engine</label><select id="new-cluster-engine"><option value="postgresql">PostgreSQL</option><option value="oracle">Oracle</option></select></div>
 <div class="form-field"><label>Cluster ID</label><input id="new-cluster-id" placeholder="prod-eu-1"></div>
 <div class="form-field"><label>Name</label><input id="new-cluster-name" placeholder="Production EU"></div>
 <div class="form-field"><label>Host</label><input id="new-host" placeholder="postgres-rw"></div>
@@ -3275,7 +3276,7 @@ Close
 <span>Last collection <strong id="postgresql-platform-last">-</strong></span>
 </div>
 </div>
-<div class="platform-status-card" data-engine="oracle">
+<div id="oracle-platform-card" class="platform-status-card" data-engine="oracle" style="display:none">
 <div class="platform-status-head">
 <div class="platform-status-title">Oracle</div>
 <span id="oracle-platform-status" class="cluster-status status-UNKNOWN">LOADING</span>
@@ -3300,7 +3301,7 @@ Close
 
 <div class="engine-tabs" role="tablist" aria-label="Database engine">
 <button class="engine-tab active" type="button" role="tab" aria-selected="true" data-engine="postgresql">PostgreSQL</button>
-<button class="engine-tab" type="button" role="tab" aria-selected="false" data-engine="oracle">Oracle</button>
+<button id="oracle-engine-tab" class="engine-tab" type="button" role="tab" aria-selected="false" data-engine="oracle" style="display:none">Oracle</button>
 </div>
 
 <div class="toolbar">
@@ -3941,6 +3942,21 @@ function setPlatformStatus(engine, status, clusters, databases, lastCollection) 
     document.getElementById(engine + '-platform-last').innerText = collectionAge(lastCollection);
 }
 
+function setOracleVisibility(visible) {
+    document.getElementById('oracle-platform-card').style.display = visible ? '' : 'none';
+    document.getElementById('oracle-engine-tab').style.display = visible ? '' : 'none';
+
+    if (!visible && currentEngine() === 'oracle') {
+        document.getElementById('engine-select').value = 'postgresql';
+        document.querySelectorAll('.engine-tab').forEach(tab => {
+            const active = tab.dataset.engine === 'postgresql';
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        updateEnginePanels();
+    }
+}
+
 async function loadPlatformStatus() {
     const [postgresResponse, oracleResponse] = await Promise.all([
         fetch('/api/cluster-overview'),
@@ -3953,6 +3969,7 @@ async function loadPlatformStatus() {
 
     const postgres = await postgresResponse.json();
     const oracle = await oracleResponse.json();
+    setOracleVisibility(oracle.length > 0);
     const postgresLast = postgres.reduce((latest, row) => {
         if (row.seconds_since_collection === null || row.seconds_since_collection === undefined) return latest;
         const captured = new Date(Date.now() - Number(row.seconds_since_collection) * 1000).toISOString();
@@ -5714,6 +5731,7 @@ async function disableCurrentCluster() {
 
 function formValues() {
     return {
+        engine: document.getElementById('new-cluster-engine').value,
         cluster_id: document.getElementById('new-cluster-id').value.trim(),
         cluster_name: document.getElementById('new-cluster-name').value.trim(),
         host: document.getElementById('new-host').value.trim(),
@@ -5726,7 +5744,13 @@ function formValues() {
     };
 }
 function showAddCluster(){
-    const oracle = currentEngine() === 'oracle';
+    const engineSelect = document.getElementById('new-cluster-engine');
+    engineSelect.value = currentEngine();
+    updateNewClusterForm();
+    document.getElementById('cluster-modal').style.display='flex';
+}
+function updateNewClusterForm(){
+    const oracle = document.getElementById('new-cluster-engine').value === 'oracle';
     document.getElementById('cluster-modal-title').innerText =
         oracle ? 'Add Oracle Cluster / DB' : 'Add Cluster / DB';
     document.getElementById('databases-label').innerText =
@@ -5734,7 +5758,6 @@ function showAddCluster(){
     document.getElementById('new-port').value = oracle ? '1521' : '5432';
     document.getElementById('new-host').placeholder = oracle ? 'oracle-scan' : 'postgres-rw';
     document.getElementById('new-databases').placeholder = oracle ? 'ORCLPDB1, APPPDB' : 'postgres, appdb';
-    document.getElementById('cluster-modal').style.display='flex';
 }
 function hideAddCluster(){ document.getElementById('cluster-modal').style.display='none'; }
 
@@ -5742,10 +5765,10 @@ async function testAddCluster() {
     const v=formValues(), st=document.getElementById('cluster-form-status');
     if(!v.host || !v.username || !v.password || !v.databases.length){ st.innerText='Host, username, password and database are required.'; return; }
     st.innerText='Testing connection...';
-    const res=await fetch(currentEngine() === 'oracle' ? '/api/oracle/test-cluster' : '/api/test-cluster',{method:'POST',headers:{'Content-Type':'application/json'},
+    const res=await fetch(v.engine === 'oracle' ? '/api/oracle/test-cluster' : '/api/test-cluster',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({host:v.host,port:v.port,username:v.username,password:v.password,database:v.databases[0]})});
     const d=await res.json();
-    st.innerText=res.ok ? `Connection OK — ${currentEngine() === 'oracle' ? '' : 'PostgreSQL '}${d.server_version}, ${d.database_name}${d.in_recovery?' (replica)':''}` : (d.detail || 'Test failed');
+    st.innerText=res.ok ? `Connection OK — ${v.engine === 'oracle' ? '' : 'PostgreSQL '}${d.server_version}, ${d.database_name}${d.in_recovery?' (replica)':''}` : (d.detail || 'Test failed');
 }
 
 async function saveAddCluster() {
@@ -5772,7 +5795,7 @@ async function saveAddCluster() {
     st.innerText = 'Saving...';
 
     const res = await fetch(
-        currentEngine() === 'oracle'
+        v.engine === 'oracle'
             ? '/api/oracle/configured-clusters'
             : '/api/configured-clusters',
         {
@@ -5816,6 +5839,12 @@ async function saveAddCluster() {
             `Saved ${d.cluster_id}. Password was not stored.`;
 
         hideAddCluster();
+
+        if (v.engine === 'oracle') {
+            setOracleVisibility(true);
+            await selectEngine('oracle');
+            return;
+        }
 
         await loadClusterOverview();
         await loadClusters();
@@ -6322,6 +6351,7 @@ document.getElementById('database-modal').addEventListener(
 );
 
 document.getElementById('add-cluster-button').addEventListener('click',showAddCluster);
+document.getElementById('new-cluster-engine').addEventListener('change',updateNewClusterForm);
 document.getElementById('cancel-cluster-button').addEventListener('click',hideAddCluster);
 document.getElementById('test-cluster-button').addEventListener('click',testAddCluster);
 document.getElementById('save-cluster-button').addEventListener('click',saveAddCluster);

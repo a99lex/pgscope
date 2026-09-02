@@ -345,29 +345,15 @@ def build_oracle_router(
                                database_name, max(captured_at) AS last_collection
                         FROM oracle_query_snapshots
                         GROUP BY cluster_id, database_name
-                    ), configured AS (
-                        SELECT c.cluster_id, c.cluster_name, d.database_name,
-                               o.last_collection, true AS configured
-                        FROM monitored_clusters c
-                        JOIN monitored_databases d USING (cluster_id)
-                        LEFT JOIN observed o USING (cluster_id, database_name)
-                        WHERE c.enabled=true AND d.enabled=true AND c.engine='oracle'
                     )
-                    SELECT * FROM configured
-                    UNION ALL
-                    SELECT o.*, false AS configured FROM observed o
-                    LEFT JOIN monitored_clusters c
-                      ON c.cluster_id=o.cluster_id AND c.engine='oracle'
-                    LEFT JOIN monitored_databases d
-                      ON d.cluster_id=o.cluster_id
-                     AND d.database_name=o.database_name
-                    WHERE (c.cluster_id IS NULL OR c.enabled=true)
-                      AND (d.database_name IS NULL OR d.enabled=true)
-                      AND (c.cluster_id IS NULL OR d.database_name IS NOT NULL)
-                      AND NOT EXISTS (
-                          SELECT 1 FROM configured x
-                          WHERE x.cluster_id=o.cluster_id AND x.database_name=o.database_name
-                      )
+                    SELECT c.cluster_id, c.cluster_name, d.database_name,
+                           o.last_collection, true AS configured
+                    FROM monitored_clusters c
+                    JOIN monitored_databases d USING (cluster_id)
+                    LEFT JOIN observed o USING (cluster_id, database_name)
+                    WHERE c.enabled=true
+                      AND d.enabled=true
+                      AND c.engine='oracle'
                     ORDER BY cluster_name, database_name
                     """
                 )
