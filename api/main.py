@@ -3293,6 +3293,11 @@ Close
 <div id="cluster-overview" class="overview-grid"></div>
 </div>
 
+<div id="oracle-cluster-overview-section" style="display:none">
+<h2>Oracle Cluster Overview</h2>
+<div id="oracle-cluster-overview" class="overview-grid"></div>
+</div>
+
 <div class="engine-tabs" role="tablist" aria-label="Database engine">
 <button class="engine-tab active" type="button" role="tab" aria-selected="true" data-engine="postgresql">PostgreSQL</button>
 <button class="engine-tab" type="button" role="tab" aria-selected="false" data-engine="oracle">Oracle</button>
@@ -3392,8 +3397,27 @@ Close
 
 <div id="oracle-dashboard" style="display:none">
 
+<div class="cards" id="oracle-summary-cards">
+<div class="card">
+<div class="card-title">Top SQL statements</div>
+<div id="oracle-sql-count" class="card-value">-</div>
+</div>
+<div class="card">
+<div class="card-title">Executions</div>
+<div id="oracle-executions" class="card-value">-</div>
+</div>
+<div class="card">
+<div class="card-title">Active / blocked sessions</div>
+<div id="oracle-session-count" class="card-value">-</div>
+</div>
+<div class="card">
+<div class="card-title">Last collection</div>
+<div id="oracle-last-collection" class="card-value" style="font-size:14px">-</div>
+</div>
+</div>
+
 <div class="panel">
-<h2>Oracle Top SQL</h2>
+<h2>Top Queries</h2>
 
 <table>
 <thead>
@@ -3847,6 +3871,55 @@ ${cluster.performance_status}
 </div>
 `;
 
+        container.appendChild(card);
+    });
+}
+
+async function loadOracleClusterOverview() {
+    const response = await fetch('/api/oracle/databases');
+    if (!response.ok) {
+        throw new Error('Oracle cluster overview API failed: ' + response.status);
+    }
+
+    const rows = await response.json();
+    const clusters = new Map();
+    rows.forEach(row => {
+        if (!clusters.has(row.cluster_id)) {
+            clusters.set(row.cluster_id, {
+                cluster_id: row.cluster_id,
+                cluster_name: row.cluster_name || row.cluster_id,
+                databases: 0,
+                last_collection: null
+            });
+        }
+        const cluster = clusters.get(row.cluster_id);
+        cluster.databases += 1;
+        if (row.last_collection && (!cluster.last_collection || row.last_collection > cluster.last_collection)) {
+            cluster.last_collection = row.last_collection;
+        }
+    });
+
+    const container = document.getElementById('oracle-cluster-overview');
+    container.innerHTML = '';
+    clusters.forEach(cluster => {
+        const age = cluster.last_collection
+            ? Math.max(0, Math.floor((Date.now() - new Date(cluster.last_collection).getTime()) / 1000))
+            : null;
+        const health = age === null ? 'UNKNOWN' : age > 120 ? 'OFFLINE' : 'HEALTHY';
+        const card = document.createElement('div');
+        card.className = 'cluster-card';
+        card.dataset.clusterid = cluster.cluster_id;
+        card.innerHTML = `
+<div class="cluster-title">${escapeHtml(cluster.cluster_name)}</div>
+<div class="status-row">
+<div><span class="status-label">Health</span><span class="cluster-status status-${health}">${health}</span></div>
+<div><span class="status-label">Performance</span><span class="cluster-status status-${health === 'HEALTHY' ? 'OK' : health}">${health === 'HEALTHY' ? 'OK' : health}</span></div>
+</div>
+<div class="cluster-stats">
+<div><div class="cluster-stat-label">Databases</div><div class="cluster-stat-value">${cluster.databases}</div></div>
+<div><div class="cluster-stat-label">Last collection</div><div class="cluster-stat-value">${collectionAge(cluster.last_collection)}</div></div>
+</div>`;
+        card.addEventListener('click', () => selectCluster(cluster.cluster_id));
         container.appendChild(card);
     });
 }
@@ -4959,11 +5032,19 @@ async function loadOracleDashboard() {
     const minutes = currentMinutes();
 
     const [
+        summaryRes,
         topSqlRes,
         sessionsRes,
         blockingRes,
         waitsRes
     ] = await Promise.all([
+
+        fetch(
+            '/api/oracle/summary'
+            + '?cluster_id=' + encodeURIComponent(cluster)
+            + '&database=' + encodeURIComponent(database)
+            + '&minutes=' + minutes
+        ),
 
         fetch(
             '/api/oracle/top-sql'
@@ -5001,6 +5082,10 @@ async function loadOracleDashboard() {
         )
     ]);
 
+    if (!summaryRes.ok) {
+        throw new Error('Oracle Summary API failed: ' + summaryRes.status);
+    }
+
     if (!topSqlRes.ok) {
         throw new Error(
             'Oracle Top SQL API failed: '
@@ -5029,6 +5114,9 @@ async function loadOracleDashboard() {
         );
     }
 
+    const summary =
+        await summaryRes.json();
+
     const topSql =
         await topSqlRes.json();
 
@@ -5040,6 +5128,17 @@ async function loadOracleDashboard() {
 
     const waits =
         await waitsRes.json();
+
+    document.getElementById('oracle-sql-count').innerText =
+        formatOracleNumber(summary.sql_count || 0);
+    document.getElementById('oracle-executions').innerText =
+        formatOracleNumber(summary.executions || 0);
+    document.getElementById('oracle-session-count').innerText =
+        formatOracleNumber(summary.active_sessions || 0)
+        + ' / '
+        + formatOracleNumber(summary.blocked_sessions || 0);
+    document.getElementById('oracle-last-collection').innerText =
+        collectionAge(summary.last_query_collection || summary.last_session_collection);
 
 
     const topSqlTable =
@@ -5314,6 +5413,9 @@ function updateEnginePanels() {
     document.getElementById('pg-cluster-overview-section').style.display =
         oracle ? 'none' : '';
 
+    document.getElementById('oracle-cluster-overview-section').style.display =
+        oracle ? '' : 'none';
+
     document.getElementById('add-cluster-button').innerText =
         oracle ? '+ Add Oracle Cluster / DB' : '+ Add Cluster / DB';
 }
@@ -5342,6 +5444,7 @@ async function refreshAll() {
     try {
         await loadPlatformStatus();
         await loadClusterOverview();
+        await loadOracleClusterOverview();
         await refreshDetail();
 
         status.innerText =
@@ -5355,6 +5458,11 @@ async function refreshAll() {
 }
 
 async function engineChanged() {
+    if (currentEngine() === 'oracle') {
+        await loadOracleClusterOverview();
+    } else {
+        await loadClusterOverview();
+    }
     await loadClusters();
     await loadDatabases();
     await refreshDetail();
