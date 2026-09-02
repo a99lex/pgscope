@@ -31,13 +31,13 @@ spec:
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  name: {{ required "migration.databaseSecret.existingSecret is required" .Values.migration.databaseSecret.existingSecret }}
                   key: {{ .Values.migration.databaseSecret.usernameKey }}
 
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  name: {{ required "migration.databaseSecret.existingSecret is required" .Values.migration.databaseSecret.existingSecret }}
                   key: {{ .Values.migration.databaseSecret.passwordKey }}
 
             - name: PGSCOPE_WRITER_USER
@@ -49,7 +49,7 @@ spec:
             - name: PGSCOPE_MIGRATOR_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.migration.databaseSecret.existingSecret }}
+                  name: {{ required "migration.databaseSecret.existingSecret is required" .Values.migration.databaseSecret.existingSecret }}
                   key: {{ .Values.migration.databaseSecret.usernameKey }}
 
             - name: PGSCOPE_API_USER
