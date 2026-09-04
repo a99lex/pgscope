@@ -1,6 +1,6 @@
 from oracle_collector import (
     INSTANCE, OS_STATS, PGA_STATS, RESOURCE_LIMITS, SESSIONS,
-    SGA_STATS, TOP_SQL, WAITS, assert_basic_sql, clean_nul,
+    SGA_STATS, TOP_SQL, WAITS, assert_basic_sql, clean_nul, load_targets,
 )
 
 
@@ -33,3 +33,40 @@ def test_clean_nul_recursively_sanitizes_collector_payload():
         "query_text": "select 1",
         "sessions": [{"program": "app"}],
     }
+
+
+def test_load_targets_only_selects_enabled_oracle_databases(monkeypatch):
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql):
+            normalized = " ".join(sql.split()).lower()
+            assert "c.engine = 'oracle'" in normalized
+            assert "c.enabled = true" in normalized
+            assert "d.enabled = true" in normalized
+
+        def fetchall(self):
+            return [{"cluster_id": "oracle-1", "database_name": "FREEPDB1"}]
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    monkeypatch.setattr(
+        "oracle_collector.store_connection",
+        lambda: Connection(),
+    )
+
+    assert load_targets() == [
+        {"cluster_id": "oracle-1", "database_name": "FREEPDB1"}
+    ]

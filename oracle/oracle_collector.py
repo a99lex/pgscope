@@ -13,6 +13,7 @@ Basic mode deliberately avoids:
 Can run with PGSCOPE_ORACLE_MOCK_FILE for development without Oracle.
 """
 
+import base64
 import json
 import logging
 import os
@@ -23,7 +24,9 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-VERSION = "0.2.0"
+VERSION = "0.4.0"
+
+NAMESPACE = os.getenv("PGSCOPE_NAMESPACE", "default")
 
 STORE_HOST = os.getenv(
     "PGSCOPE_STORE_HOST",
@@ -327,34 +330,72 @@ def store_connection():
     )
 
 
-def oracle_connection():
+def create_k8s_api():
+    from kubernetes import client as k8s_client
+    from kubernetes import config as k8s_config
+
+    k8s_config.load_incluster_config()
+    return k8s_client.CoreV1Api()
+
+
+K8S_API = None
+
+
+def secret_value(secret_name, secret_key):
+    global K8S_API
+    if not secret_name or not secret_key:
+        raise RuntimeError("Oracle secret name and key are required")
+    if K8S_API is None:
+        K8S_API = create_k8s_api()
+    secret = K8S_API.read_namespaced_secret(
+        name=secret_name,
+        namespace=NAMESPACE,
+    )
+    encoded = (secret.data or {}).get(secret_key)
+    if encoded is None:
+        raise RuntimeError(
+            f"Secret {secret_name} does not contain key {secret_key}"
+        )
+    return base64.b64decode(encoded).decode("utf-8")
+
+
+def load_targets():
+    with store_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT c.cluster_id, c.cluster_name, c.host, c.port,
+                       c.username, c.secret_name, c.secret_key,
+                       d.database_name
+                FROM monitored_clusters c
+                JOIN monitored_databases d
+                  ON d.cluster_id = c.cluster_id
+                 AND d.enabled = true
+                WHERE c.enabled = true
+                  AND c.engine = 'oracle'
+                ORDER BY c.cluster_name, d.database_name
+                """
+            )
+            return cur.fetchall()
+
+
+def oracle_connection(target):
     try:
         import oracledb
     except ImportError as exc:
         raise RuntimeError(
-            "Install python-oracledb: "
-            "pip install oracledb"
+            "Install python-oracledb: pip install oracledb"
         ) from exc
 
-    if (
-        not ORACLE_HOST
-        or not ORACLE_PASSWORD
-    ):
-        raise RuntimeError(
-            "PGSCOPE_ORACLE_HOST and "
-            "PGSCOPE_ORACLE_PASSWORD "
-            "are required"
-        )
-
+    password = secret_value(target["secret_name"], target["secret_key"])
     dsn = oracledb.makedsn(
-        ORACLE_HOST,
-        ORACLE_PORT,
-        service_name=ORACLE_SERVICE,
+        target["host"],
+        int(target.get("port") or 1521),
+        service_name=target["database_name"],
     )
-
     return oracledb.connect(
-        user=ORACLE_USER,
-        password=ORACLE_PASSWORD,
+        user=target["username"],
+        password=password,
         dsn=dsn,
     )
 
@@ -378,8 +419,8 @@ def rows_as_dicts(
     ]
 
 
-def collect_real():
-    with oracle_connection() as conn:
+def collect_real(target):
+    with oracle_connection(target) as conn:
         cur = conn.cursor()
 
         cur.execute(
@@ -476,7 +517,7 @@ def collect_real():
                 "instance_number"
             ),
         "database_name":
-            DATABASE_NAME,
+            instance.get("database_name") or target["database_name"],
         "queries":
             queries,
         "sessions":
@@ -524,6 +565,7 @@ def insert_snapshot(
     store,
     captured_at,
     payload,
+    target,
 ):
     payload = clean_nul(payload)
 
@@ -531,7 +573,7 @@ def insert_snapshot(
         payload.get(
             "database_name"
         )
-        or DATABASE_NAME
+        or target["database_name"]
     )
 
     instance_number = payload.get(
@@ -564,7 +606,7 @@ def insert_snapshot(
                 """,
                 {
                     "captured_at": captured_at,
-                    "cluster_id": CLUSTER_ID,
+                    "cluster_id": target["cluster_id"],
                     "database_name": dbname,
                     **system,
                 },
@@ -622,9 +664,9 @@ def insert_snapshot(
                     "captured_at":
                         captured_at,
                     "cluster_id":
-                        CLUSTER_ID,
+                        target["cluster_id"],
                     "cluster_name":
-                        CLUSTER_NAME,
+                        target["cluster_name"],
                     "database_name":
                         dbname,
                     "instance_number":
@@ -747,7 +789,7 @@ def insert_snapshot(
                     "captured_at":
                         captured_at,
                     "cluster_id":
-                        CLUSTER_ID,
+                        target["cluster_id"],
                     "database_name":
                         dbname,
                     **s,
@@ -780,7 +822,7 @@ def insert_snapshot(
                 """,
                 (
                     captured_at,
-                    CLUSTER_ID,
+                    target["cluster_id"],
                     dbname,
                     w["wait_class"],
                     n(
@@ -895,7 +937,7 @@ def insert_snapshot(
                 "captured_at":
                     captured_at,
                 "cluster_id":
-                    CLUSTER_ID,
+                    target["cluster_id"],
                 "database_name":
                     dbname,
             },
@@ -905,51 +947,33 @@ def insert_snapshot(
 
 
 def run_once():
-    captured_at = datetime.now(
-        timezone.utc
-    )
+    targets = load_targets()
+    if not targets:
+        log.info("No enabled Oracle databases configured")
+        return
 
-    payload = (
-        collect_mock()
-        if MOCK_FILE
-        else collect_real()
-    )
-
-    with store_connection() as store:
-        insert_snapshot(
-            store,
-            captured_at,
-            payload,
-        )
-
-    log.info(
-        "Oracle collection complete "
-        "cluster=%s db=%s "
-        "queries=%d sessions=%d waits=%d",
-        CLUSTER_ID,
-        payload.get(
-            "database_name",
-            DATABASE_NAME,
-        ),
-        len(
-            payload.get(
-                "queries",
-                [],
+    for target in targets:
+        captured_at = datetime.now(timezone.utc)
+        try:
+            payload = collect_mock() if MOCK_FILE else collect_real(target)
+            with store_connection() as store:
+                insert_snapshot(store, captured_at, payload, target)
+            log.info(
+                "Oracle collection complete cluster=%s db=%s "
+                "queries=%d sessions=%d waits=%d system=%s",
+                target["cluster_id"],
+                payload.get("database_name", target["database_name"]),
+                len(payload.get("queries", [])),
+                len(payload.get("sessions", [])),
+                len(payload.get("waits", [])),
+                bool(payload.get("system")),
             )
-        ),
-        len(
-            payload.get(
-                "sessions",
-                [],
+        except Exception:
+            log.exception(
+                "Oracle collection failed cluster=%s db=%s",
+                target["cluster_id"],
+                target["database_name"],
             )
-        ),
-        len(
-            payload.get(
-                "waits",
-                [],
-            )
-        ),
-    )
 
 
 def main():

@@ -1,0 +1,5 @@
+FROM pgscope-oracle-collector:0.3.4
+
+USER root
+COPY oracle_collector.py /app/oracle_collector.py
+USER 100
