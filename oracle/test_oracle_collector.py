@@ -1,6 +1,7 @@
 from oracle_collector import (
     INSTANCE, OS_STATS, PGA_STATS, RESOURCE_LIMITS, SESSIONS,
     SGA_STATS, TOP_SQL, WAITS, assert_basic_sql, clean_nul, load_targets,
+    snapshot_database_name,
 )
 
 
@@ -33,6 +34,13 @@ def test_clean_nul_recursively_sanitizes_collector_payload():
         "query_text": "select 1",
         "sessions": [{"program": "app"}],
     }
+
+
+def test_snapshot_database_name_uses_configured_service_name():
+    payload = {"database_name": "FREE"}
+    target = {"database_name": "freepdb1"}
+
+    assert snapshot_database_name(payload, target) == "freepdb1"
 
 
 def test_load_targets_only_selects_enabled_oracle_databases(monkeypatch):

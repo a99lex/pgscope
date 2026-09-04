@@ -24,7 +24,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 NAMESPACE = os.getenv("PGSCOPE_NAMESPACE", "default")
 
@@ -561,6 +561,17 @@ def clean_nul(value):
     return value
 
 
+def snapshot_database_name(payload, target):
+    """Use the configured service name as the repository/report key.
+
+    V$DATABASE.NAME can differ from the service name used by PgScope (for
+    example FREE versus freepdb1). Reports select by the configured target, so
+    storing snapshots under the instance database name makes valid samples
+    invisible to the UI.
+    """
+    return target["database_name"]
+
+
 def insert_snapshot(
     store,
     captured_at,
@@ -569,12 +580,7 @@ def insert_snapshot(
 ):
     payload = clean_nul(payload)
 
-    dbname = (
-        payload.get(
-            "database_name"
-        )
-        or target["database_name"]
-    )
+    dbname = snapshot_database_name(payload, target)
 
     instance_number = payload.get(
         "instance_number"
@@ -959,9 +965,10 @@ def run_once():
             with store_connection() as store:
                 insert_snapshot(store, captured_at, payload, target)
             log.info(
-                "Oracle collection complete cluster=%s db=%s "
+                "Oracle collection complete cluster=%s db=%s source_db=%s "
                 "queries=%d sessions=%d waits=%d system=%s",
                 target["cluster_id"],
+                target["database_name"],
                 payload.get("database_name", target["database_name"]),
                 len(payload.get("queries", [])),
                 len(payload.get("sessions", [])),
