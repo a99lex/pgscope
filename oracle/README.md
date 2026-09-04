@@ -12,6 +12,8 @@ First Oracle extension for PgScope. PostgreSQL remains the PgScope repository.
 - Oracle `EXPLAIN PLAN` endpoint
 - Mock mode so the collector can be tested without Oracle
 - Basic-mode SQL guard that rejects ASH/AWR/Tuning-Pack source markers
+- Extended health report with host CPU/load, physical memory, SGA/PGA,
+  sessions/processes, instance state, workload totals, waits, and Top SQL
 
 ## 1. Create repository tables
 
@@ -67,3 +69,9 @@ The new endpoints are:
 ## Basic-mode boundary
 
 The collector intentionally does not query ASH, AWR, ADDM, SQL Monitor or `DBA_HIST_*` sources. The SQL guard is a defense-in-depth check, not a substitute for an Oracle licensing review for a production product.
+
+The extended report reads current values from `V$OSSTAT`, `V$SGA`,
+`V$PGASTAT`, `V$RESOURCE_LIMIT`, `V$INSTANCE`, and `V$DATABASE`. Grant the
+monitoring account `SELECT` on the corresponding underlying `V_$` views.
+These reads are optional: SQL, session, and wait collection continues when a
+system metric view is unavailable.
