@@ -1,6 +1,30 @@
 {
   "instance_number": 1,
   "database_name": "FREEPDB1",
+  "system": {
+    "instance_number": 1,
+    "instance_name": "FREE",
+    "instance_status": "OPEN",
+    "startup_time": "2026-01-01T00:00:00Z",
+    "database_role": "PRIMARY",
+    "open_mode": "READ WRITE",
+    "cpu_count": 4,
+    "cpu_busy_ticks": 25000,
+    "cpu_idle_ticks": 75000,
+    "load_average": 1.5,
+    "physical_memory_bytes": 17179869184,
+    "free_memory_bytes": 6442450944,
+    "sga_bytes": 4294967296,
+    "pga_allocated_bytes": 1073741824,
+    "pga_inuse_bytes": 805306368,
+    "pga_max_bytes": 1610612736,
+    "sessions_current": 42,
+    "sessions_max": 80,
+    "sessions_limit": 300,
+    "processes_current": 55,
+    "processes_max": 90,
+    "processes_limit": 500
+  },
   "queries": [
     {
       "sql_id": "8u5x1abc12345",

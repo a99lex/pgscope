@@ -24,3 +24,6 @@ data:
 
   007_cluster_engine.sql: |
 {{ .Files.Get "migrations/007_cluster_engine.sql" | indent 4 }}
+
+  008_oracle_system_metrics.sql: |
+{{ .Files.Get "migrations/008_oracle_system_metrics.sql" | indent 4 }}

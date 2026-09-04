@@ -67,3 +67,4 @@ jobs:
           test -f migrations/003_storage_grants.sql
           test -f migrations/004_api_grants.sql
           test -f migrations/005_plan_regression.sql
+          test -f migrations/008_oracle_system_metrics.sql

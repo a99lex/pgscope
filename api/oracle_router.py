@@ -1026,6 +1026,55 @@ def build_oracle_router(
                 )
                 waits = cur.fetchall()
 
+                cur.execute(
+                    """
+                    WITH period AS (
+                        SELECT *
+                        FROM oracle_system_snapshots
+                        WHERE cluster_id=%s AND database_name=%s
+                          AND captured_at>=now()-make_interval(mins=>%s)
+                    ), first_sample AS (
+                        SELECT * FROM period ORDER BY captured_at ASC LIMIT 1
+                    ), last_sample AS (
+                        SELECT * FROM period ORDER BY captured_at DESC LIMIT 1
+                    )
+                    SELECT l.*,
+                           CASE
+                             WHEN l.cpu_busy_ticks>=f.cpu_busy_ticks
+                              AND l.cpu_idle_ticks>=f.cpu_idle_ticks
+                              AND (l.cpu_busy_ticks-f.cpu_busy_ticks)+(l.cpu_idle_ticks-f.cpu_idle_ticks)>0
+                             THEN round(100*(l.cpu_busy_ticks-f.cpu_busy_ticks)/
+                               ((l.cpu_busy_ticks-f.cpu_busy_ticks)+(l.cpu_idle_ticks-f.cpu_idle_ticks)),2)
+                           END AS host_cpu_pct,
+                           CASE WHEN l.physical_memory_bytes>0
+                             THEN round(100*l.free_memory_bytes/l.physical_memory_bytes,2)
+                           END AS host_memory_free_pct,
+                           CASE WHEN l.physical_memory_bytes>0
+                             THEN round(100*(coalesce(l.sga_bytes,0)+coalesce(l.pga_allocated_bytes,0))/l.physical_memory_bytes,2)
+                           END AS oracle_memory_pct
+                    FROM last_sample l CROSS JOIN first_sample f
+                    """,
+                    (cluster_id, database, minutes),
+                )
+                system = cur.fetchone()
+
+                cur.execute(
+                    """
+                    SELECT count(DISTINCT sql_id)::bigint AS sql_count,
+                           coalesce(sum(executions_delta),0)::bigint AS executions,
+                           round(coalesce(sum(elapsed_ms_delta),0),2) AS elapsed_ms,
+                           round(coalesce(sum(cpu_ms_delta),0),2) AS cpu_ms,
+                           coalesce(sum(buffer_gets_delta),0)::bigint AS buffer_gets,
+                           coalesce(sum(disk_reads_delta),0)::bigint AS disk_reads,
+                           coalesce(sum(rows_delta),0)::bigint AS rows_processed
+                    FROM oracle_query_deltas
+                    WHERE cluster_id=%s AND database_name=%s
+                      AND captured_at>=now()-make_interval(mins=>%s)
+                    """,
+                    (cluster_id, database, minutes),
+                )
+                workload = cur.fetchone()
+
         age = collection["age_seconds"] if collection else None
         freshness = "CRITICAL" if age is None or age > 300 else "WARNING" if age > 120 else "OK"
         add_check(
@@ -1049,6 +1098,62 @@ def build_oracle_router(
             "Active user sessions in the latest collector snapshot.",
             "Review concurrency and Top SQL." if active_status != "OK" else None,
         )
+
+        if system:
+            cpu_pct = float(system["host_cpu_pct"]) if system["host_cpu_pct"] is not None else None
+            cpu_status = "CRITICAL" if cpu_pct is not None and cpu_pct >= 90 else "WARNING" if cpu_pct is not None and cpu_pct >= 75 else "OK"
+            add_check(
+                "Host CPU utilization", cpu_status,
+                "Unavailable" if cpu_pct is None else f"{cpu_pct:.1f}%",
+                "CPU utilization derived from V$OSSTAT BUSY_TIME and IDLE_TIME deltas in the report period.",
+                "Correlate CPU pressure with Top SQL and host workload." if cpu_status != "OK" else None,
+            )
+
+            free_pct = float(system["host_memory_free_pct"]) if system["host_memory_free_pct"] is not None else None
+            memory_status = "CRITICAL" if free_pct is not None and free_pct < 5 else "WARNING" if free_pct is not None and free_pct < 10 else "OK"
+            add_check(
+                "Host free memory", memory_status,
+                "Unavailable" if free_pct is None else f"{free_pct:.1f}%",
+                "Free physical memory from V$OSSTAT; validate together with operating-system cache and swap activity.",
+                "Investigate host memory pressure and SGA/PGA sizing." if memory_status != "OK" else None,
+            )
+
+            load = float(system["load_average"]) if system["load_average"] is not None else None
+            cpu_count = int(system["cpu_count"] or 0)
+            load_per_cpu = load / cpu_count if load is not None and cpu_count else None
+            load_status = "CRITICAL" if load_per_cpu is not None and load_per_cpu >= 1.5 else "WARNING" if load_per_cpu is not None and load_per_cpu >= 1 else "OK"
+            add_check(
+                "Host load per CPU", load_status,
+                "Unavailable" if load_per_cpu is None else f"{load_per_cpu:.2f}",
+                f"Current load average divided by {cpu_count or 'unknown'} logical CPUs.",
+                "Check CPU queueing and non-database host processes." if load_status != "OK" else None,
+            )
+
+            for resource, label in (("sessions", "Session capacity"), ("processes", "Process capacity")):
+                current = system[f"{resource}_current"]
+                limit = system[f"{resource}_limit"]
+                utilization = 100 * int(current) / int(limit) if current is not None and limit else None
+                resource_status = "CRITICAL" if utilization is not None and utilization >= 90 else "WARNING" if utilization is not None and utilization >= 75 else "OK"
+                add_check(
+                    label, resource_status,
+                    "Unavailable" if utilization is None else f"{current} / {limit} ({utilization:.1f}%)",
+                    f"Current Oracle {resource} utilization compared with the configured limit.",
+                    f"Review {resource} growth and configured limit before capacity is exhausted." if resource_status != "OK" else None,
+                )
+
+            instance_ok = system["instance_status"] == "OPEN"
+            add_check(
+                "Instance and database state", "OK" if instance_ok else "CRITICAL",
+                f"{system['instance_status'] or '-'} / {system['open_mode'] or '-'}",
+                f"Role: {system['database_role'] or '-'}; instance: {system['instance_name'] or '-'}.",
+                "Verify instance availability, database role, and open mode." if not instance_ok else None,
+            )
+        else:
+            add_check(
+                "Host and memory metrics", "WARNING", "Unavailable",
+                "No Oracle system snapshot exists for the selected period.",
+                "Apply migration 008 and grant the monitor user access to the Basic-mode metric views.",
+            )
 
         worst_avg = max((float(q["avg_exec_ms"] or 0) for q in top_queries), default=0)
         latency_status = "CRITICAL" if worst_avg >= 1000 else "WARNING" if worst_avg >= 250 else "OK"
@@ -1085,6 +1190,8 @@ def build_oracle_router(
                 "sessions": sessions,
                 "waits": waits,
                 "top_queries": top_queries,
+                "system": system,
+                "workload": workload,
             },
         }
 

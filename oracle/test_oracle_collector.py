@@ -1,8 +1,11 @@
-from oracle_collector import assert_basic_sql, clean_nul, TOP_SQL, SESSIONS, WAITS, INSTANCE
+from oracle_collector import (
+    INSTANCE, OS_STATS, PGA_STATS, RESOURCE_LIMITS, SESSIONS,
+    SGA_STATS, TOP_SQL, WAITS, assert_basic_sql, clean_nul,
+)
 
 
 def test_basic_queries_allowed():
-    for sql in (TOP_SQL, SESSIONS, WAITS, INSTANCE):
+    for sql in (TOP_SQL, SESSIONS, WAITS, INSTANCE, OS_STATS, SGA_STATS, PGA_STATS, RESOURCE_LIMITS):
         assert_basic_sql(sql)
 
 

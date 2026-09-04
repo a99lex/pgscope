@@ -3045,6 +3045,10 @@ canvas {
 .report-check { background:#0f172a; border:1px solid #334155; border-radius:8px; padding:12px; margin:8px 0; }
 .report-check-detail { color:#94a3b8; margin-top:5px; }
 .report-rec { color:#93c5fd; margin-top:5px; }
+.report-system-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin:10px 0 20px; }
+.report-system-card { background:#0f172a; border:1px solid #334155; border-radius:8px; padding:12px; }
+.report-system-card span { display:block; color:#94a3b8; font-size:12px; margin-bottom:5px; }
+.report-system-card strong { font-size:18px; }
 
 @media print {
     body * {
@@ -3096,6 +3100,7 @@ canvas {
     }
 
     .report-check,
+    .report-system-card,
     .report-score,
     .report-check-detail,
     .report-rec,
@@ -3259,7 +3264,9 @@ Close
 <div id="report-status" class="form-status"></div><div id="report-content" style="display:none">
 <div id="report-meta" class="report-check" style="margin-bottom:14px"></div>
 <div id="report-score" class="report-score"></div><div id="report-grade" class="cluster-status"></div>
-<h3>Health Checks</h3><div id="report-checks"></div><h3>Recommendations</h3><div id="report-recommendations"></div>
+<h3>Health Checks</h3><div id="report-checks"></div>
+<div id="report-system-section" style="display:none"><h3>Oracle System and Workload</h3><div id="report-system-metrics" class="report-system-grid"></div></div>
+<h3>Recommendations</h3><div id="report-recommendations"></div>
 <h3>Top Queries</h3><table><thead><tr><th id="report-query-id-heading">Query ID</th><th id="report-calls-heading">Calls</th><th>Total ms</th><th>Avg ms</th><th id="report-io-heading">WAL MB</th><th>Query</th></tr></thead>
 <tbody id="report-top-queries"></tbody></table></div>
 <div class="form-actions"><button id="print-report-button" class="report-button">Print / Save PDF</button><button id="close-report-button">Close</button></div></div></div>
@@ -5562,6 +5569,27 @@ async function generateHealthReport(){
   const checks=document.getElementById('report-checks'); checks.innerHTML='';
   d.checks.forEach(c=>{const el=document.createElement('div');el.className='report-check';
    el.innerHTML='<b>'+escapeHtml(c.title)+' — '+escapeHtml(c.status)+' — '+escapeHtml(String(c.value??'-'))+'</b><div class="report-check-detail">'+escapeHtml(c.detail||'')+'</div>'+(c.recommendation?'<div class="report-rec">'+escapeHtml(c.recommendation)+'</div>':'');checks.appendChild(el);});
+  const systemSection=document.getElementById('report-system-section');
+  const systemBox=document.getElementById('report-system-metrics');
+  systemBox.innerHTML=''; systemSection.style.display=oracle?'block':'none';
+  if(oracle){
+   const s=d.metrics.system||{},w=d.metrics.workload||{};
+   const bytes=value=>value===null||value===undefined?'-':(Number(value)/1024/1024/1024).toFixed(2)+' GB';
+   const metric=(label,value)=>'<div class="report-system-card"><span>'+escapeHtml(label)+'</span><strong>'+escapeHtml(String(value??'-'))+'</strong></div>';
+   systemBox.innerHTML=
+    metric('Host CPU',s.host_cpu_pct===null||s.host_cpu_pct===undefined?'-':Number(s.host_cpu_pct).toFixed(1)+'%')+
+    metric('Logical CPUs',s.cpu_count)+metric('Load average',s.load_average)+
+    metric('Physical memory',bytes(s.physical_memory_bytes))+metric('Free memory',bytes(s.free_memory_bytes))+
+    metric('SGA',bytes(s.sga_bytes))+metric('PGA allocated',bytes(s.pga_allocated_bytes))+
+    metric('PGA in use',bytes(s.pga_inuse_bytes))+metric('Peak PGA',bytes(s.pga_max_bytes))+
+    metric('Sessions',s.sessions_current===undefined?'-':s.sessions_current+' / '+(s.sessions_limit??'-'))+
+    metric('Processes',s.processes_current===undefined?'-':s.processes_current+' / '+(s.processes_limit??'-'))+
+    metric('Instance',s.instance_name||'-')+metric('Database role',s.database_role||'-')+
+    metric('Open mode',s.open_mode||'-')+metric('SQL executions',w.executions??0)+
+    metric('SQL elapsed',Number(w.elapsed_ms||0).toFixed(2)+' ms')+
+    metric('SQL CPU',Number(w.cpu_ms||0).toFixed(2)+' ms')+
+    metric('Buffer gets',w.buffer_gets??0)+metric('Disk reads',w.disk_reads??0);
+  }
   document.getElementById('report-recommendations').innerHTML=d.recommendations.length?'<ol>'+d.recommendations.map(x=>'<li>'+escapeHtml(x)+'</li>').join('')+'</ol>':'No immediate recommendations.';
   const tq=document.getElementById('report-top-queries'); tq.innerHTML='';
   (d.metrics.top_queries||[]).forEach(q=>{const r=document.createElement('tr');r.innerHTML='<td>'+escapeHtml(oracle?q.sql_id:q.queryid)+'</td><td>'+(oracle?q.executions:q.calls)+'</td><td>'+(oracle?q.elapsed_ms:q.total_exec_ms)+'</td><td>'+q.avg_exec_ms+'</td><td>'+(oracle?q.disk_reads:q.wal_mb)+'</td><td class="query">'+escapeHtml(q.query_text)+'</td>';tq.appendChild(r);});
