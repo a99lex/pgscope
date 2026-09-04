@@ -4,5 +4,5 @@ RUN addgroup --system pgscope \
     && adduser --system --ingroup pgscope pgscope \
     && pip install --no-cache-dir "psycopg[binary]" PyYAML kubernetes
 COPY --chown=pgscope:pgscope collector /app/collector
-USER pgscope
+USER 100:101
 CMD ["python", "-u", "/app/collector/collector.py"]

@@ -3432,7 +3432,8 @@ Close
 <th>Buffer Gets</th>
 <th>Disk Reads</th>
 <th>Rows</th>
-<th>History / Plan</th>
+<th>History</th>
+<th>Explain</th>
 <th>SQL</th>
 </tr>
 </thead>
@@ -5195,10 +5196,19 @@ ${escapeHtml(q.sql_id)}
 <td>
 <button
     type="button"
-    class="history-button oracle-details-button"
+    class="history-button oracle-history-button"
     data-sql-id="${escapeHtml(q.sql_id)}"
 >
-History / Plan
+History
+</button>
+</td>
+<td>
+<button
+    type="button"
+    class="explain-button oracle-explain-button"
+    data-sql-id="${escapeHtml(q.sql_id)}"
+>
+Explain
 </button>
 </td>
 <td class="query">${escapeHtml(q.query_text)}</td>
@@ -5209,13 +5219,13 @@ History / Plan
         );
 
         row.addEventListener('click', event => {
-            if (event.target.closest('.oracle-sql-link, .oracle-details-button')) return;
+            if (event.target.closest('.oracle-sql-link, .oracle-history-button, .oracle-explain-button')) return;
             showOracleSqlDetails(q.sql_id);
         });
     });
 
     topSqlTable
-        .querySelectorAll('.oracle-sql-link, .oracle-details-button')
+        .querySelectorAll('.oracle-sql-link, .oracle-history-button')
         .forEach(link => {
             link.addEventListener(
                 'click',
@@ -5223,6 +5233,20 @@ History / Plan
                     showOracleSqlDetails(
                         link.dataset.sqlId
                     );
+                }
+            );
+        });
+
+    topSqlTable
+        .querySelectorAll('.oracle-explain-button')
+        .forEach(button => {
+            button.addEventListener(
+                'click',
+                async () => {
+                    await showOracleSqlDetails(
+                        button.dataset.sqlId
+                    );
+                    await explainOracleSql();
                 }
             );
         });

@@ -192,6 +192,7 @@ def load_targets():
       ON d.cluster_id = c.cluster_id
      AND d.enabled = true
     WHERE c.enabled = true
+      AND c.engine = 'postgresql'
     GROUP BY
         c.cluster_id,
         c.cluster_name,
